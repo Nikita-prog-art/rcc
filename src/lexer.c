@@ -1,0 +1,215 @@
+#include "lexer.h"
+
+#include <ctype.h>
+#include <stdio.h>
+#include <string.h>
+
+static char lexer_peek(const Lexer *lexer) {
+    if (lexer->offset >= lexer->length) {
+        return '\0';
+    }
+    return lexer->source[lexer->offset];
+}
+
+static char lexer_advance(Lexer *lexer) {
+    char ch = lexer_peek(lexer);
+    if (ch == '\0') {
+        return ch;
+    }
+    lexer->offset++;
+    if (ch == '\n') {
+        lexer->line++;
+        lexer->column = 1;
+    } else {
+        lexer->column++;
+    }
+    return ch;
+}
+
+static Token make_token(const Lexer *lexer, TokenKind kind, const char *start, size_t length) {
+    Token token;
+    token.kind = kind;
+    token.lexeme = start;
+    token.length = length;
+    token.line = lexer->line;
+    token.column = lexer->column;
+    token.integer_value = 0;
+    return token;
+}
+
+static void skip_whitespace(Lexer *lexer) {
+    for (;;) {
+        char ch = lexer_peek(lexer);
+        if (isspace((unsigned char) ch)) {
+            lexer_advance(lexer);
+            continue;
+        }
+        break;
+    }
+}
+
+static TokenKind identifier_kind(const char *start, size_t length) {
+    if (length == 2 && strncmp(start, "fn", 2) == 0) {
+        return TOKEN_FN;
+    }
+    if (length == 3 && strncmp(start, "let", 3) == 0) {
+        return TOKEN_LET;
+    }
+    if (length == 6 && strncmp(start, "return", 6) == 0) {
+        return TOKEN_RETURN;
+    }
+    if (length == 3 && strncmp(start, "i32", 3) == 0) {
+        return TOKEN_I32;
+    }
+    return TOKEN_IDENTIFIER;
+}
+
+void lexer_init(Lexer *lexer, const char *source) {
+    lexer->source = source;
+    lexer->length = strlen(source);
+    lexer->offset = 0;
+    lexer->line = 1;
+    lexer->column = 1;
+}
+
+Token lexer_next(Lexer *lexer) {
+    skip_whitespace(lexer);
+
+    const char *start = lexer->source + lexer->offset;
+    size_t line = lexer->line;
+    size_t column = lexer->column;
+    char ch = lexer_advance(lexer);
+
+    if (ch == '\0') {
+        Token token = make_token(lexer, TOKEN_EOF, start, 0);
+        token.line = line;
+        token.column = column;
+        return token;
+    }
+
+    if (isalpha((unsigned char) ch) || ch == '_') {
+        while (isalnum((unsigned char) lexer_peek(lexer)) || lexer_peek(lexer) == '_') {
+            lexer_advance(lexer);
+        }
+        size_t length = (size_t) ((lexer->source + lexer->offset) - start);
+        Token token = make_token(lexer, identifier_kind(start, length), start, length);
+        token.line = line;
+        token.column = column;
+        return token;
+    }
+
+    if (isdigit((unsigned char) ch)) {
+        long value = ch - '0';
+        while (isdigit((unsigned char) lexer_peek(lexer))) {
+            value = value * 10 + (lexer_advance(lexer) - '0');
+        }
+        size_t length = (size_t) ((lexer->source + lexer->offset) - start);
+        Token token = make_token(lexer, TOKEN_INTEGER, start, length);
+        token.line = line;
+        token.column = column;
+        token.integer_value = value;
+        return token;
+    }
+
+    Token token = make_token(lexer, TOKEN_ERROR, start, 1);
+    token.line = line;
+    token.column = column;
+
+    switch (ch) {
+        case '(':
+            token.kind = TOKEN_LPAREN;
+            break;
+        case ')':
+            token.kind = TOKEN_RPAREN;
+            break;
+        case '{':
+            token.kind = TOKEN_LBRACE;
+            break;
+        case '}':
+            token.kind = TOKEN_RBRACE;
+            break;
+        case ':':
+            token.kind = TOKEN_COLON;
+            break;
+        case ';':
+            token.kind = TOKEN_SEMICOLON;
+            break;
+        case ',':
+            token.kind = TOKEN_COMMA;
+            break;
+        case '=':
+            token.kind = TOKEN_EQUAL;
+            break;
+        case '+':
+            token.kind = TOKEN_PLUS;
+            break;
+        case '*':
+            token.kind = TOKEN_STAR;
+            break;
+        case '/':
+            token.kind = TOKEN_SLASH;
+            break;
+        case '-':
+            if (lexer_peek(lexer) == '>') {
+                lexer_advance(lexer);
+                token.kind = TOKEN_ARROW;
+                token.length = 2;
+            } else {
+                token.kind = TOKEN_MINUS;
+            }
+            break;
+        default:
+            fprintf(stderr, "lexer error at %zu:%zu: unexpected character '%c'\n", line, column, ch);
+            break;
+    }
+
+    return token;
+}
+
+const char *token_kind_name(TokenKind kind) {
+    switch (kind) {
+        case TOKEN_EOF:
+            return "eof";
+        case TOKEN_ERROR:
+            return "error";
+        case TOKEN_IDENTIFIER:
+            return "identifier";
+        case TOKEN_INTEGER:
+            return "integer";
+        case TOKEN_FN:
+            return "fn";
+        case TOKEN_LET:
+            return "let";
+        case TOKEN_RETURN:
+            return "return";
+        case TOKEN_I32:
+            return "i32";
+        case TOKEN_LPAREN:
+            return "(";
+        case TOKEN_RPAREN:
+            return ")";
+        case TOKEN_LBRACE:
+            return "{";
+        case TOKEN_RBRACE:
+            return "}";
+        case TOKEN_COLON:
+            return ":";
+        case TOKEN_SEMICOLON:
+            return ";";
+        case TOKEN_COMMA:
+            return ",";
+        case TOKEN_ARROW:
+            return "->";
+        case TOKEN_EQUAL:
+            return "=";
+        case TOKEN_PLUS:
+            return "+";
+        case TOKEN_MINUS:
+            return "-";
+        case TOKEN_STAR:
+            return "*";
+        case TOKEN_SLASH:
+            return "/";
+    }
+    return "unknown";
+}
