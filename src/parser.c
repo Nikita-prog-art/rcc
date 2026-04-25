@@ -43,6 +43,7 @@ static Expr *parse_expr(Parser *parser);
 static Expr *parse_call(Parser *parser, Token callee);
 static Expr *parse_primary(Parser *parser);
 static Stmt *parse_statement(Parser *parser);
+static Stmt *parse_if_statement(Parser *parser);
 
 typedef enum BlockKind {
     BLOCK_IF_THEN = 0,
@@ -71,6 +72,18 @@ static bool parse_block(Parser *parser, Stmt *owner, BlockKind block_kind) {
         }
     }
     return parser_expect(parser, TOKEN_RBRACE, "'}'");
+}
+
+static bool parse_else_branch(Parser *parser, Stmt *if_stmt) {
+    if (parser->current.kind == TOKEN_IF) {
+        Stmt *nested_if = parse_if_statement(parser);
+        if (nested_if == NULL) {
+            return false;
+        }
+        stmt_append_else_statement(if_stmt, nested_if);
+        return true;
+    }
+    return parse_block(parser, if_stmt, BLOCK_IF_ELSE);
 }
 
 static Expr *parse_unary(Parser *parser) {
@@ -249,6 +262,25 @@ static Expr *parse_expr(Parser *parser) {
     return parse_equality(parser);
 }
 
+static Stmt *parse_if_statement(Parser *parser) {
+    parser_advance(parser);
+    Expr *condition = parse_expr(parser);
+    if (condition == NULL) {
+        return NULL;
+    }
+    Stmt *if_stmt = stmt_create_if(condition);
+    if (!parse_block(parser, if_stmt, BLOCK_IF_THEN)) {
+        return NULL;
+    }
+    if (!parser_expect(parser, TOKEN_ELSE, "'else'")) {
+        return NULL;
+    }
+    if (!parse_else_branch(parser, if_stmt)) {
+        return NULL;
+    }
+    return if_stmt;
+}
+
 static Stmt *parse_statement(Parser *parser) {
     if (parser->current.kind == TOKEN_LET) {
         parser_advance(parser);
@@ -332,22 +364,7 @@ static Stmt *parse_statement(Parser *parser) {
     }
 
     if (parser->current.kind == TOKEN_IF) {
-        parser_advance(parser);
-        Expr *condition = parse_expr(parser);
-        if (condition == NULL) {
-            return NULL;
-        }
-        Stmt *if_stmt = stmt_create_if(condition);
-        if (!parse_block(parser, if_stmt, BLOCK_IF_THEN)) {
-            return NULL;
-        }
-        if (!parser_expect(parser, TOKEN_ELSE, "'else'")) {
-            return NULL;
-        }
-        if (!parse_block(parser, if_stmt, BLOCK_IF_ELSE)) {
-            return NULL;
-        }
-        return if_stmt;
+        return parse_if_statement(parser);
     }
 
     if (parser->current.kind == TOKEN_WHILE) {

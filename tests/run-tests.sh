@@ -28,6 +28,7 @@ run_fail() {
 run_ok "$ROOT_DIR/tests/basic_main.rs"
 run_ok "$ROOT_DIR/tests/function_call.rs"
 run_ok "$ROOT_DIR/tests/if_else.rs"
+run_ok "$ROOT_DIR/tests/else_if.rs"
 run_ok "$ROOT_DIR/tests/break_continue.rs"
 run_ok "$ROOT_DIR/tests/block_scope.rs"
 run_ok "$ROOT_DIR/tests/comments.rs"
