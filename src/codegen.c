@@ -488,6 +488,10 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
         return emit_block_statement(context, stmt, llvm_function);
     }
 
+    if (stmt->kind == STMT_EMPTY) {
+        return true;
+    }
+
     if (stmt->kind == STMT_BREAK) {
         if (context->loop_depth == 0) {
             fprintf(stderr, "codegen error: break outside of loop\n");

@@ -288,6 +288,11 @@ static Stmt *parse_if_statement(Parser *parser) {
 }
 
 static Stmt *parse_statement(Parser *parser) {
+    if (parser->current.kind == TOKEN_SEMICOLON) {
+        parser_advance(parser);
+        return stmt_create_empty();
+    }
+
     if (parser->current.kind == TOKEN_LET) {
         parser_advance(parser);
         bool is_mutable = false;

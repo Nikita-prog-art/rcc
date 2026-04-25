@@ -90,6 +90,7 @@ static void destroy_stmt(Stmt *stmt) {
             }
             free(stmt->block_stmt.statements);
             break;
+        case STMT_EMPTY:
         case STMT_BREAK:
         case STMT_CONTINUE:
             break;
@@ -245,6 +246,12 @@ Stmt *stmt_create_loop(void) {
 Stmt *stmt_create_block(void) {
     Stmt *stmt = xcalloc(1, sizeof(Stmt));
     stmt->kind = STMT_BLOCK;
+    return stmt;
+}
+
+Stmt *stmt_create_empty(void) {
+    Stmt *stmt = xcalloc(1, sizeof(Stmt));
+    stmt->kind = STMT_EMPTY;
     return stmt;
 }
 

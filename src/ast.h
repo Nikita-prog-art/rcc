@@ -79,6 +79,7 @@ typedef enum StmtKind {
     STMT_WHILE,
     STMT_LOOP,
     STMT_BLOCK,
+    STMT_EMPTY,
     STMT_BREAK,
     STMT_CONTINUE
 } StmtKind;
@@ -165,6 +166,7 @@ Stmt *stmt_create_if(Expr *condition);
 Stmt *stmt_create_while(Expr *condition);
 Stmt *stmt_create_loop(void);
 Stmt *stmt_create_block(void);
+Stmt *stmt_create_empty(void);
 Stmt *stmt_create_break(void);
 Stmt *stmt_create_continue(void);
 void stmt_append_then_statement(Stmt *stmt, Stmt *child);

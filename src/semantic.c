@@ -245,6 +245,11 @@ static bool check_statement(const Stmt *stmt,
         return true;
     }
 
+    if (stmt->kind == STMT_EMPTY) {
+        *always_returns = false;
+        return true;
+    }
+
     if (stmt->kind == STMT_BREAK || stmt->kind == STMT_CONTINUE) {
         if (loop_depth == 0) {
             fprintf(stderr, "semantic error: '%s' used outside of loop\n",
