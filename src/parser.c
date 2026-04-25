@@ -319,12 +319,12 @@ static Stmt *parse_statement(Parser *parser) {
         if (!parser_expect(parser, TOKEN_IDENTIFIER, "identifier")) {
             return NULL;
         }
-        if (!parser_expect(parser, TOKEN_COLON, "':'")) {
-            return NULL;
-        }
-        TypeKind type;
-        if (!parse_type(parser, &type)) {
-            return NULL;
+        TypeKind type = TYPE_I32;
+        if (parser->current.kind == TOKEN_COLON) {
+            parser_advance(parser);
+            if (!parse_type(parser, &type)) {
+                return NULL;
+            }
         }
         if (!parser_expect(parser, TOKEN_EQUAL, "'='")) {
             return NULL;
