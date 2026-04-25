@@ -90,6 +90,11 @@ static bool parse_else_branch(Parser *parser, Stmt *if_stmt) {
 }
 
 static Expr *parse_unary(Parser *parser) {
+    if (parser->current.kind == TOKEN_PLUS) {
+        parser_advance(parser);
+        return parse_unary(parser);
+    }
+
     if (parser->current.kind == TOKEN_MINUS) {
         parser_advance(parser);
         Expr *operand = parse_unary(parser);
