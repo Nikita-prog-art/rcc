@@ -398,6 +398,46 @@ static bool emit_while_statement(CodegenContext *context, const Stmt *stmt, LLVM
     return true;
 }
 
+static bool emit_loop_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
+    char body_name[32];
+    char exit_name[32];
+    Local saved_locals[256];
+    size_t saved_local_count = context->local_count;
+
+    memcpy(saved_locals, context->locals, sizeof(saved_locals));
+    snprintf(body_name, sizeof(body_name), "loop_body_%u", context->temp_counter);
+    snprintf(exit_name, sizeof(exit_name), "loop_end_%u", context->temp_counter);
+    context->temp_counter++;
+
+    LLVMBasicBlockRef body_block = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, body_name);
+    LLVMBasicBlockRef exit_block = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, exit_name);
+
+    LLVMBuildBr(context->builder, body_block);
+
+    LLVMPositionBuilderAtEnd(context->builder, body_block);
+    context->local_count = saved_local_count;
+    memcpy(context->locals, saved_locals, sizeof(saved_locals));
+    context->loop_continue_blocks[context->loop_depth] = body_block;
+    context->loop_break_blocks[context->loop_depth] = exit_block;
+    context->loop_depth++;
+    if (!emit_statement_list(context,
+                             (const Stmt *const *) stmt->loop_stmt.body_statements,
+                             stmt->loop_stmt.body_count,
+                             llvm_function)) {
+        context->loop_depth--;
+        return false;
+    }
+    context->loop_depth--;
+    if (!block_has_terminator(LLVMGetInsertBlock(context->builder))) {
+        LLVMBuildBr(context->builder, body_block);
+    }
+
+    LLVMPositionBuilderAtEnd(context->builder, exit_block);
+    context->local_count = saved_local_count;
+    memcpy(context->locals, saved_locals, sizeof(saved_locals));
+    return true;
+}
+
 static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
     if (stmt->kind == STMT_LET) {
         LLVMValueRef value = emit_expr(context, stmt->let_stmt.value);
@@ -438,6 +478,10 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
 
     if (stmt->kind == STMT_WHILE) {
         return emit_while_statement(context, stmt, llvm_function);
+    }
+
+    if (stmt->kind == STMT_LOOP) {
+        return emit_loop_statement(context, stmt, llvm_function);
     }
 
     if (stmt->kind == STMT_BLOCK) {

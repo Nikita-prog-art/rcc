@@ -78,6 +78,12 @@ static void destroy_stmt(Stmt *stmt) {
             }
             free(stmt->while_stmt.body_statements);
             break;
+        case STMT_LOOP:
+            for (size_t i = 0; i < stmt->loop_stmt.body_count; i++) {
+                destroy_stmt(stmt->loop_stmt.body_statements[i]);
+            }
+            free(stmt->loop_stmt.body_statements);
+            break;
         case STMT_BLOCK:
             for (size_t i = 0; i < stmt->block_stmt.statement_count; i++) {
                 destroy_stmt(stmt->block_stmt.statements[i]);
@@ -230,6 +236,12 @@ Stmt *stmt_create_while(Expr *condition) {
     return stmt;
 }
 
+Stmt *stmt_create_loop(void) {
+    Stmt *stmt = xcalloc(1, sizeof(Stmt));
+    stmt->kind = STMT_LOOP;
+    return stmt;
+}
+
 Stmt *stmt_create_block(void) {
     Stmt *stmt = xcalloc(1, sizeof(Stmt));
     stmt->kind = STMT_BLOCK;
@@ -261,6 +273,11 @@ void stmt_append_else_statement(Stmt *stmt, Stmt *child) {
 void stmt_append_while_statement(Stmt *stmt, Stmt *child) {
     grow_ptr_array((void ***) &stmt->while_stmt.body_statements, &stmt->while_stmt.body_capacity, stmt->while_stmt.body_count);
     stmt->while_stmt.body_statements[stmt->while_stmt.body_count++] = child;
+}
+
+void stmt_append_loop_statement(Stmt *stmt, Stmt *child) {
+    grow_ptr_array((void ***) &stmt->loop_stmt.body_statements, &stmt->loop_stmt.body_capacity, stmt->loop_stmt.body_count);
+    stmt->loop_stmt.body_statements[stmt->loop_stmt.body_count++] = child;
 }
 
 void stmt_append_block_statement(Stmt *stmt, Stmt *child) {

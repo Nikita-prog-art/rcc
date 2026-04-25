@@ -49,6 +49,7 @@ typedef enum BlockKind {
     BLOCK_IF_THEN = 0,
     BLOCK_IF_ELSE,
     BLOCK_WHILE_BODY,
+    BLOCK_LOOP_BODY,
     BLOCK_STANDALONE
 } BlockKind;
 
@@ -67,6 +68,8 @@ static bool parse_block(Parser *parser, Stmt *owner, BlockKind block_kind) {
             stmt_append_else_statement(owner, statement);
         } else if (block_kind == BLOCK_WHILE_BODY) {
             stmt_append_while_statement(owner, statement);
+        } else if (block_kind == BLOCK_LOOP_BODY) {
+            stmt_append_loop_statement(owner, statement);
         } else {
             stmt_append_block_statement(owner, statement);
         }
@@ -378,6 +381,15 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         return while_stmt;
+    }
+
+    if (parser->current.kind == TOKEN_LOOP) {
+        parser_advance(parser);
+        Stmt *loop_stmt = stmt_create_loop();
+        if (!parse_block(parser, loop_stmt, BLOCK_LOOP_BODY)) {
+            return NULL;
+        }
+        return loop_stmt;
     }
 
     if (parser->current.kind == TOKEN_LBRACE) {

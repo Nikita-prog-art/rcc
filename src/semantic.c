@@ -217,6 +217,21 @@ static bool check_statement(const Stmt *stmt,
         return true;
     }
 
+    if (stmt->kind == STMT_LOOP) {
+        bool body_returns = false;
+        SymbolTable body_symbols = *symbols;
+        if (!check_statements((const Stmt *const *) stmt->loop_stmt.body_statements,
+                              stmt->loop_stmt.body_count,
+                              &body_symbols,
+                              functions,
+                              loop_depth + 1,
+                              &body_returns)) {
+            return false;
+        }
+        *always_returns = false;
+        return true;
+    }
+
     if (stmt->kind == STMT_BLOCK) {
         SymbolTable block_symbols = *symbols;
         if (!check_statements((const Stmt *const *) stmt->block_stmt.statements,

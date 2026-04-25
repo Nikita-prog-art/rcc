@@ -93,6 +93,9 @@ static TokenKind identifier_kind(const char *start, size_t length) {
     if (length == 5 && strncmp(start, "while", 5) == 0) {
         return TOKEN_WHILE;
     }
+    if (length == 4 && strncmp(start, "loop", 4) == 0) {
+        return TOKEN_LOOP;
+    }
     if (length == 3 && strncmp(start, "mut", 3) == 0) {
         return TOKEN_MUT;
     }
@@ -268,6 +271,8 @@ const char *token_kind_name(TokenKind kind) {
             return "else";
         case TOKEN_WHILE:
             return "while";
+        case TOKEN_LOOP:
+            return "loop";
         case TOKEN_MUT:
             return "mut";
         case TOKEN_BREAK:
