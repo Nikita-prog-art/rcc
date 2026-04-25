@@ -77,6 +77,12 @@ static bool check_expr(const Expr *expr, const SymbolTable *symbols, const Funct
     return false;
 }
 
+static bool check_statements(const Stmt *const *statements,
+                             size_t statement_count,
+                             const SymbolTable *input_symbols,
+                             const FunctionTable *functions,
+                             bool *always_returns);
+
 static bool symbol_table_insert(SymbolTable *symbols, const char *name, size_t length, TypeKind type) {
     for (size_t i = 0; i < symbols->count; i++) {
         if (same_name(name, length, symbols->items[i].name, symbols->items[i].length)) {
@@ -92,9 +98,83 @@ static bool symbol_table_insert(SymbolTable *symbols, const char *name, size_t l
     return true;
 }
 
+static bool check_statement(const Stmt *stmt,
+                            SymbolTable *symbols,
+                            const FunctionTable *functions,
+                            bool *always_returns) {
+    if (stmt->kind == STMT_LET) {
+        if (!check_expr(stmt->let_stmt.value, symbols, functions)) {
+            return false;
+        }
+        if (!symbol_table_insert(symbols, stmt->let_stmt.name, stmt->let_stmt.length, stmt->let_stmt.type)) {
+            return false;
+        }
+        *always_returns = false;
+        return true;
+    }
+
+    if (stmt->kind == STMT_RETURN) {
+        if (!check_expr(stmt->return_stmt.value, symbols, functions)) {
+            return false;
+        }
+        *always_returns = true;
+        return true;
+    }
+
+    if (stmt->kind == STMT_IF) {
+        bool then_returns = false;
+        bool else_returns = false;
+        SymbolTable then_symbols = *symbols;
+        SymbolTable else_symbols = *symbols;
+
+        if (!check_expr(stmt->if_stmt.condition, symbols, functions)) {
+            return false;
+        }
+        if (!check_statements((const Stmt *const *) stmt->if_stmt.then_statements,
+                              stmt->if_stmt.then_count,
+                              &then_symbols,
+                              functions,
+                              &then_returns)) {
+            return false;
+        }
+        if (!check_statements((const Stmt *const *) stmt->if_stmt.else_statements,
+                              stmt->if_stmt.else_count,
+                              &else_symbols,
+                              functions,
+                              &else_returns)) {
+            return false;
+        }
+        *always_returns = then_returns && else_returns;
+        return true;
+    }
+
+    return false;
+}
+
+static bool check_statements(const Stmt *const *statements,
+                             size_t statement_count,
+                             const SymbolTable *input_symbols,
+                             const FunctionTable *functions,
+                             bool *always_returns) {
+    SymbolTable symbols = *input_symbols;
+    *always_returns = false;
+
+    for (size_t i = 0; i < statement_count; i++) {
+        bool stmt_returns = false;
+        if (!check_statement(statements[i], &symbols, functions, &stmt_returns)) {
+            return false;
+        }
+        if (stmt_returns) {
+            *always_returns = true;
+            return true;
+        }
+    }
+    return true;
+}
+
 static bool check_function(const Function *function, const FunctionTable *functions) {
     SymbolTable symbols = {0};
-    bool has_return = false;
+    bool always_returns = false;
 
     for (size_t i = 0; i < function->param_count; i++) {
         const Param *param = &function->params[i];
@@ -103,27 +183,15 @@ static bool check_function(const Function *function, const FunctionTable *functi
         }
     }
 
-    for (size_t i = 0; i < function->statement_count; i++) {
-        const Stmt *stmt = function->statements[i];
-        if (stmt->kind == STMT_LET) {
-            if (!check_expr(stmt->let_stmt.value, &symbols, functions)) {
-                return false;
-            }
-            if (!symbol_table_insert(&symbols, stmt->let_stmt.name, stmt->let_stmt.length, stmt->let_stmt.type)) {
-                return false;
-            }
-            continue;
-        }
-
-        if (stmt->kind == STMT_RETURN) {
-            if (!check_expr(stmt->return_stmt.value, &symbols, functions)) {
-                return false;
-            }
-            has_return = true;
-        }
+    if (!check_statements((const Stmt *const *) function->statements,
+                          function->statement_count,
+                          &symbols,
+                          functions,
+                          &always_returns)) {
+        return false;
     }
 
-    if (!has_return) {
+    if (!always_returns) {
         fprintf(stderr, "semantic error: function '%.*s' must end with return\n",
                 (int) function->name_length, function->name);
         return false;

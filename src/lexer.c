@@ -58,6 +58,12 @@ static TokenKind identifier_kind(const char *start, size_t length) {
     if (length == 6 && strncmp(start, "return", 6) == 0) {
         return TOKEN_RETURN;
     }
+    if (length == 2 && strncmp(start, "if", 2) == 0) {
+        return TOKEN_IF;
+    }
+    if (length == 4 && strncmp(start, "else", 4) == 0) {
+        return TOKEN_ELSE;
+    }
     if (length == 3 && strncmp(start, "i32", 3) == 0) {
         return TOKEN_I32;
     }
@@ -138,7 +144,38 @@ Token lexer_next(Lexer *lexer) {
             token.kind = TOKEN_COMMA;
             break;
         case '=':
-            token.kind = TOKEN_EQUAL;
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                token.kind = TOKEN_EQUAL_EQUAL;
+                token.length = 2;
+            } else {
+                token.kind = TOKEN_EQUAL;
+            }
+            break;
+        case '!':
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                token.kind = TOKEN_BANG_EQUAL;
+                token.length = 2;
+            }
+            break;
+        case '<':
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                token.kind = TOKEN_LESS_EQUAL;
+                token.length = 2;
+            } else {
+                token.kind = TOKEN_LESS;
+            }
+            break;
+        case '>':
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                token.kind = TOKEN_GREATER_EQUAL;
+                token.length = 2;
+            } else {
+                token.kind = TOKEN_GREATER;
+            }
             break;
         case '+':
             token.kind = TOKEN_PLUS;
@@ -182,6 +219,10 @@ const char *token_kind_name(TokenKind kind) {
             return "let";
         case TOKEN_RETURN:
             return "return";
+        case TOKEN_IF:
+            return "if";
+        case TOKEN_ELSE:
+            return "else";
         case TOKEN_I32:
             return "i32";
         case TOKEN_LPAREN:
@@ -202,6 +243,18 @@ const char *token_kind_name(TokenKind kind) {
             return "->";
         case TOKEN_EQUAL:
             return "=";
+        case TOKEN_EQUAL_EQUAL:
+            return "==";
+        case TOKEN_BANG_EQUAL:
+            return "!=";
+        case TOKEN_LESS:
+            return "<";
+        case TOKEN_LESS_EQUAL:
+            return "<=";
+        case TOKEN_GREATER:
+            return ">";
+        case TOKEN_GREATER_EQUAL:
+            return ">=";
         case TOKEN_PLUS:
             return "+";
         case TOKEN_MINUS:

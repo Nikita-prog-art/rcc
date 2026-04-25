@@ -27,8 +27,10 @@ run_fail() {
 
 run_ok "$ROOT_DIR/tests/basic_main.rs"
 run_ok "$ROOT_DIR/tests/function_call.rs"
+run_ok "$ROOT_DIR/tests/if_else.rs"
 run_ok "$ROOT_DIR/tests/precedence.rs"
 run_fail "$ROOT_DIR/tests/undefined_name.rs"
+run_fail "$ROOT_DIR/tests/missing_else_return.rs"
 run_fail "$ROOT_DIR/tests/wrong_arity.rs"
 run_fail "$ROOT_DIR/tests/missing_return.rs"
 

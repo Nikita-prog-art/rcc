@@ -55,6 +55,17 @@ static void destroy_stmt(Stmt *stmt) {
         case STMT_RETURN:
             destroy_expr(stmt->return_stmt.value);
             break;
+        case STMT_IF:
+            destroy_expr(stmt->if_stmt.condition);
+            for (size_t i = 0; i < stmt->if_stmt.then_count; i++) {
+                destroy_stmt(stmt->if_stmt.then_statements[i]);
+            }
+            for (size_t i = 0; i < stmt->if_stmt.else_count; i++) {
+                destroy_stmt(stmt->if_stmt.else_statements[i]);
+            }
+            free(stmt->if_stmt.then_statements);
+            free(stmt->if_stmt.else_statements);
+            break;
     }
     free(stmt);
 }
@@ -164,6 +175,23 @@ Stmt *stmt_create_return(Expr *value) {
     stmt->kind = STMT_RETURN;
     stmt->return_stmt.value = value;
     return stmt;
+}
+
+Stmt *stmt_create_if(Expr *condition) {
+    Stmt *stmt = xcalloc(1, sizeof(Stmt));
+    stmt->kind = STMT_IF;
+    stmt->if_stmt.condition = condition;
+    return stmt;
+}
+
+void stmt_append_then_statement(Stmt *stmt, Stmt *child) {
+    grow_ptr_array((void ***) &stmt->if_stmt.then_statements, &stmt->if_stmt.then_capacity, stmt->if_stmt.then_count);
+    stmt->if_stmt.then_statements[stmt->if_stmt.then_count++] = child;
+}
+
+void stmt_append_else_statement(Stmt *stmt, Stmt *child) {
+    grow_ptr_array((void ***) &stmt->if_stmt.else_statements, &stmt->if_stmt.else_capacity, stmt->if_stmt.else_count);
+    stmt->if_stmt.else_statements[stmt->if_stmt.else_count++] = child;
 }
 
 void program_append_function(Program *program, Function *function) {

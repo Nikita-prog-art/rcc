@@ -41,6 +41,25 @@ static bool parse_type(Parser *parser, TypeKind *out_type) {
 
 static Expr *parse_expr(Parser *parser);
 static Expr *parse_call(Parser *parser, Token callee);
+static Stmt *parse_statement(Parser *parser);
+
+static bool parse_block(Parser *parser, Stmt *if_stmt, bool is_then_block) {
+    if (!parser_expect(parser, TOKEN_LBRACE, "'{'")) {
+        return false;
+    }
+    while (!parser->has_error && parser->current.kind != TOKEN_RBRACE && parser->current.kind != TOKEN_EOF) {
+        Stmt *statement = parse_statement(parser);
+        if (statement == NULL) {
+            return false;
+        }
+        if (is_then_block) {
+            stmt_append_then_statement(if_stmt, statement);
+        } else {
+            stmt_append_else_statement(if_stmt, statement);
+        }
+    }
+    return parser_expect(parser, TOKEN_RBRACE, "'}'");
+}
 
 static Expr *parse_primary(Parser *parser) {
     Token token = parser->current;
@@ -126,8 +145,58 @@ static Expr *parse_additive(Parser *parser) {
     return expr;
 }
 
+static Expr *parse_comparison(Parser *parser) {
+    Expr *expr = parse_additive(parser);
+    while (!parser->has_error &&
+           (parser->current.kind == TOKEN_LESS ||
+            parser->current.kind == TOKEN_LESS_EQUAL ||
+            parser->current.kind == TOKEN_GREATER ||
+            parser->current.kind == TOKEN_GREATER_EQUAL)) {
+        TokenKind op = parser->current.kind;
+        parser_advance(parser);
+        Expr *rhs = parse_additive(parser);
+        if (rhs == NULL) {
+            return NULL;
+        }
+        BinaryOp binary_op = BINARY_LT;
+        switch (op) {
+            case TOKEN_LESS:
+                binary_op = BINARY_LT;
+                break;
+            case TOKEN_LESS_EQUAL:
+                binary_op = BINARY_LE;
+                break;
+            case TOKEN_GREATER:
+                binary_op = BINARY_GT;
+                break;
+            case TOKEN_GREATER_EQUAL:
+                binary_op = BINARY_GE;
+                break;
+            default:
+                break;
+        }
+        expr = expr_create_binary(binary_op, expr, rhs);
+    }
+    return expr;
+}
+
+static Expr *parse_equality(Parser *parser) {
+    Expr *expr = parse_comparison(parser);
+    while (!parser->has_error &&
+           (parser->current.kind == TOKEN_EQUAL_EQUAL || parser->current.kind == TOKEN_BANG_EQUAL)) {
+        TokenKind op = parser->current.kind;
+        parser_advance(parser);
+        Expr *rhs = parse_comparison(parser);
+        if (rhs == NULL) {
+            return NULL;
+        }
+        expr = expr_create_binary(op == TOKEN_EQUAL_EQUAL ? BINARY_EQ : BINARY_NE, expr, rhs);
+    }
+    return expr;
+}
+
 static Expr *parse_expr(Parser *parser) {
-    return parse_additive(parser);
+    return parse_equality(parser);
 }
 
 static Stmt *parse_statement(Parser *parser) {
@@ -167,6 +236,25 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         return stmt_create_return(value);
+    }
+
+    if (parser->current.kind == TOKEN_IF) {
+        parser_advance(parser);
+        Expr *condition = parse_expr(parser);
+        if (condition == NULL) {
+            return NULL;
+        }
+        Stmt *if_stmt = stmt_create_if(condition);
+        if (!parse_block(parser, if_stmt, true)) {
+            return NULL;
+        }
+        if (!parser_expect(parser, TOKEN_ELSE, "'else'")) {
+            return NULL;
+        }
+        if (!parse_block(parser, if_stmt, false)) {
+            return NULL;
+        }
+        return if_stmt;
     }
 
     fprintf(stderr,

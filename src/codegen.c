@@ -23,6 +23,7 @@ typedef struct CodegenContext {
     size_t function_count;
     Local locals[256];
     size_t local_count;
+    unsigned temp_counter;
 } CodegenContext;
 
 static bool same_name(const char *lhs, size_t lhs_len, const char *rhs, size_t rhs_len) {
@@ -111,6 +112,42 @@ static LLVMValueRef emit_expr(CodegenContext *context, const Expr *expr) {
                     return LLVMBuildMul(context->builder, lhs, rhs, "multmp");
                 case BINARY_DIV:
                     return LLVMBuildSDiv(context->builder, lhs, rhs, "divtmp");
+                case BINARY_EQ:
+                    return LLVMBuildZExt(
+                        context->builder,
+                        LLVMBuildICmp(context->builder, LLVMIntEQ, lhs, rhs, "eqtmp"),
+                        LLVMInt32TypeInContext(context->llvm_context),
+                        "eqi32");
+                case BINARY_NE:
+                    return LLVMBuildZExt(
+                        context->builder,
+                        LLVMBuildICmp(context->builder, LLVMIntNE, lhs, rhs, "netmp"),
+                        LLVMInt32TypeInContext(context->llvm_context),
+                        "nei32");
+                case BINARY_LT:
+                    return LLVMBuildZExt(
+                        context->builder,
+                        LLVMBuildICmp(context->builder, LLVMIntSLT, lhs, rhs, "lttmp"),
+                        LLVMInt32TypeInContext(context->llvm_context),
+                        "lti32");
+                case BINARY_LE:
+                    return LLVMBuildZExt(
+                        context->builder,
+                        LLVMBuildICmp(context->builder, LLVMIntSLE, lhs, rhs, "letmp"),
+                        LLVMInt32TypeInContext(context->llvm_context),
+                        "lei32");
+                case BINARY_GT:
+                    return LLVMBuildZExt(
+                        context->builder,
+                        LLVMBuildICmp(context->builder, LLVMIntSGT, lhs, rhs, "gttmp"),
+                        LLVMInt32TypeInContext(context->llvm_context),
+                        "gti32");
+                case BINARY_GE:
+                    return LLVMBuildZExt(
+                        context->builder,
+                        LLVMBuildICmp(context->builder, LLVMIntSGE, lhs, rhs, "getmp"),
+                        LLVMInt32TypeInContext(context->llvm_context),
+                        "gei32");
             }
             return NULL;
         }
@@ -165,6 +202,111 @@ static LLVMValueRef declare_function(CodegenContext *context, const Function *fu
     return llvm_function;
 }
 
+static bool block_has_terminator(LLVMBasicBlockRef block) {
+    return LLVMGetBasicBlockTerminator(block) != NULL;
+}
+
+static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function);
+
+static bool emit_statement_list(CodegenContext *context,
+                                const Stmt *const *statements,
+                                size_t statement_count,
+                                LLVMValueRef llvm_function) {
+    for (size_t i = 0; i < statement_count; i++) {
+        if (!emit_statement(context, statements[i], llvm_function)) {
+            return false;
+        }
+        if (block_has_terminator(LLVMGetInsertBlock(context->builder))) {
+            break;
+        }
+    }
+    return true;
+}
+
+static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
+    LLVMValueRef condition_value = emit_expr(context, stmt->if_stmt.condition);
+    char then_name[32];
+    char else_name[32];
+    char merge_name[32];
+    Local saved_locals[256];
+    size_t saved_local_count = context->local_count;
+
+    if (condition_value == NULL) {
+        return false;
+    }
+    memcpy(saved_locals, context->locals, sizeof(saved_locals));
+    snprintf(then_name, sizeof(then_name), "then_%u", context->temp_counter);
+    snprintf(else_name, sizeof(else_name), "else_%u", context->temp_counter);
+    snprintf(merge_name, sizeof(merge_name), "ifend_%u", context->temp_counter);
+    context->temp_counter++;
+
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(context->llvm_context), 0, false);
+    LLVMValueRef is_true = LLVMBuildICmp(context->builder, LLVMIntNE, condition_value, zero, "ifcond");
+    LLVMBasicBlockRef then_block = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, then_name);
+    LLVMBasicBlockRef else_block = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, else_name);
+    LLVMBasicBlockRef merge_block = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, merge_name);
+
+    LLVMBuildCondBr(context->builder, is_true, then_block, else_block);
+
+    LLVMPositionBuilderAtEnd(context->builder, then_block);
+    context->local_count = saved_local_count;
+    memcpy(context->locals, saved_locals, sizeof(saved_locals));
+    if (!emit_statement_list(context,
+                             (const Stmt *const *) stmt->if_stmt.then_statements,
+                             stmt->if_stmt.then_count,
+                             llvm_function)) {
+        return false;
+    }
+    if (!block_has_terminator(then_block)) {
+        LLVMBuildBr(context->builder, merge_block);
+    }
+
+    LLVMPositionBuilderAtEnd(context->builder, else_block);
+    context->local_count = saved_local_count;
+    memcpy(context->locals, saved_locals, sizeof(saved_locals));
+    if (!emit_statement_list(context,
+                             (const Stmt *const *) stmt->if_stmt.else_statements,
+                             stmt->if_stmt.else_count,
+                             llvm_function)) {
+        return false;
+    }
+    if (!block_has_terminator(else_block)) {
+        LLVMBuildBr(context->builder, merge_block);
+    }
+
+    if (LLVMGetBasicBlockTerminator(then_block) != NULL && LLVMGetBasicBlockTerminator(else_block) != NULL) {
+        LLVMDeleteBasicBlock(merge_block);
+        return true;
+    }
+
+    LLVMPositionBuilderAtEnd(context->builder, merge_block);
+    context->local_count = saved_local_count;
+    memcpy(context->locals, saved_locals, sizeof(saved_locals));
+    return true;
+}
+
+static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
+    if (stmt->kind == STMT_LET) {
+        LLVMValueRef value = emit_expr(context, stmt->let_stmt.value);
+        return value != NULL && define_local(context, stmt->let_stmt.name, stmt->let_stmt.length, value);
+    }
+
+    if (stmt->kind == STMT_RETURN) {
+        LLVMValueRef value = emit_expr(context, stmt->return_stmt.value);
+        if (value == NULL) {
+            return false;
+        }
+        LLVMBuildRet(context->builder, value);
+        return true;
+    }
+
+    if (stmt->kind == STMT_IF) {
+        return emit_if_statement(context, stmt, llvm_function);
+    }
+
+    return false;
+}
+
 static bool emit_function(CodegenContext *context, const Function *function, LLVMValueRef llvm_function) {
 
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, "entry");
@@ -179,21 +321,10 @@ static bool emit_function(CodegenContext *context, const Function *function, LLV
     }
 
     for (size_t i = 0; i < function->statement_count; i++) {
-        const Stmt *stmt = function->statements[i];
-        if (stmt->kind == STMT_LET) {
-            LLVMValueRef value = emit_expr(context, stmt->let_stmt.value);
-            if (value == NULL || !define_local(context, stmt->let_stmt.name, stmt->let_stmt.length, value)) {
-                return false;
-            }
-            continue;
+        if (!emit_statement(context, function->statements[i], llvm_function)) {
+            return false;
         }
-
-        if (stmt->kind == STMT_RETURN) {
-            LLVMValueRef value = emit_expr(context, stmt->return_stmt.value);
-            if (value == NULL) {
-                return false;
-            }
-            LLVMBuildRet(context->builder, value);
+        if (block_has_terminator(LLVMGetInsertBlock(context->builder))) {
             break;
         }
     }

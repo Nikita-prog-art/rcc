@@ -18,7 +18,13 @@ typedef enum BinaryOp {
     BINARY_ADD = 0,
     BINARY_SUB,
     BINARY_MUL,
-    BINARY_DIV
+    BINARY_DIV,
+    BINARY_EQ,
+    BINARY_NE,
+    BINARY_LT,
+    BINARY_LE,
+    BINARY_GT,
+    BINARY_GE
 } BinaryOp;
 
 typedef struct Expr Expr;
@@ -56,7 +62,8 @@ struct Expr {
 
 typedef enum StmtKind {
     STMT_LET = 0,
-    STMT_RETURN
+    STMT_RETURN,
+    STMT_IF
 } StmtKind;
 
 struct Stmt {
@@ -71,6 +78,15 @@ struct Stmt {
         struct {
             Expr *value;
         } return_stmt;
+        struct {
+            Expr *condition;
+            Stmt **then_statements;
+            size_t then_count;
+            size_t then_capacity;
+            Stmt **else_statements;
+            size_t else_count;
+            size_t else_capacity;
+        } if_stmt;
     };
 };
 
@@ -104,6 +120,9 @@ Expr *expr_create_call(const char *callee, size_t callee_length);
 void expr_append_call_arg(Expr *expr, Expr *arg);
 Stmt *stmt_create_let(const char *name, size_t length, TypeKind type, Expr *value);
 Stmt *stmt_create_return(Expr *value);
+Stmt *stmt_create_if(Expr *condition);
+void stmt_append_then_statement(Stmt *stmt, Stmt *child);
+void stmt_append_else_statement(Stmt *stmt, Stmt *child);
 void program_append_function(Program *program, Function *function);
 
 #endif
