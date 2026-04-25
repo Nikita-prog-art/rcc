@@ -7,6 +7,7 @@ LLVM_LDFLAGS := $(shell llvm-config --ldflags --system-libs --libs core analysis
 
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -pedantic -g
 CPPFLAGS := -Isrc
+DEPFLAGS := -MMD -MP
 
 SRC := \
 	src/main.c \
@@ -17,6 +18,7 @@ SRC := \
 	src/codegen.c
 
 OBJ := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SRC))
+DEP := $(OBJ:.o=.d)
 
 .PHONY: all clean test
 
@@ -26,7 +28,7 @@ $(BIN): $(OBJ) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(OBJ) -o $@ $(LLVM_LDFLAGS)
 
 $(BUILD_DIR)/%.o: src/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(CPPFLAGS) $(LLVM_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) $(LLVM_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -36,3 +38,5 @@ test: $(BIN)
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+-include $(DEP)

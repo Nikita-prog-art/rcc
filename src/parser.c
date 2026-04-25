@@ -4,8 +4,9 @@
 #include <string.h>
 
 static void parser_advance(Parser *parser) {
-    parser->current = lexer_next(&parser->lexer);
-    if (parser->current.kind == TOKEN_ERROR) {
+    parser->current = parser->next;
+    parser->next = lexer_next(&parser->lexer);
+    if (parser->current.kind == TOKEN_ERROR || parser->next.kind == TOKEN_ERROR) {
         parser->has_error = true;
     }
 }
@@ -44,6 +45,15 @@ static Expr *parse_call(Parser *parser, Token callee);
 static Expr *parse_primary(Parser *parser);
 static Stmt *parse_statement(Parser *parser);
 static Stmt *parse_if_statement(Parser *parser);
+
+static bool token_starts_expr(TokenKind kind) {
+    return kind == TOKEN_INTEGER ||
+           kind == TOKEN_IDENTIFIER ||
+           kind == TOKEN_LPAREN ||
+           kind == TOKEN_PLUS ||
+           kind == TOKEN_MINUS ||
+           kind == TOKEN_BANG;
+}
 
 typedef enum BlockKind {
     BLOCK_IF_THEN = 0,
@@ -329,26 +339,18 @@ static Stmt *parse_statement(Parser *parser) {
         return stmt_create_let(name.lexeme, name.length, type, is_mutable, value);
     }
 
-    if (parser->current.kind == TOKEN_IDENTIFIER) {
+    if (parser->current.kind == TOKEN_IDENTIFIER && parser->next.kind == TOKEN_EQUAL) {
         Token name = parser->current;
         parser_advance(parser);
-        if (parser->current.kind == TOKEN_EQUAL) {
-            parser_advance(parser);
-            Expr *value = parse_expr(parser);
-            if (value == NULL) {
-                return NULL;
-            }
-            if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
-                return NULL;
-            }
-            return stmt_create_assign(name.lexeme, name.length, value);
+        parser_advance(parser);
+        Expr *value = parse_expr(parser);
+        if (value == NULL) {
+            return NULL;
         }
-        fprintf(stderr,
-                "parse error at %zu:%zu: expected assignment after identifier\n",
-                parser->current.line,
-                parser->current.column);
-        parser->has_error = true;
-        return NULL;
+        if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
+            return NULL;
+        }
+        return stmt_create_assign(name.lexeme, name.length, value);
     }
 
     if (parser->current.kind == TOKEN_RETURN) {
@@ -411,6 +413,30 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         return block_stmt;
+    }
+
+    if (token_starts_expr(parser->current.kind)) {
+        Expr *value = parse_expr(parser);
+        if (value == NULL) {
+            return NULL;
+        }
+        if (parser->current.kind == TOKEN_SEMICOLON) {
+            fprintf(stderr,
+                    "parse error at %zu:%zu: expression statements must currently be final in a block\n",
+                    parser->current.line,
+                    parser->current.column);
+            parser->has_error = true;
+            return NULL;
+        }
+        if (parser->current.kind == TOKEN_RBRACE) {
+            return stmt_create_return(value);
+        }
+        fprintf(stderr,
+                "parse error at %zu:%zu: expected ';' or block end after expression\n",
+                parser->current.line,
+                parser->current.column);
+        parser->has_error = true;
+        return NULL;
     }
 
     fprintf(stderr,
@@ -490,7 +516,11 @@ static Function *parse_function(Parser *parser) {
 void parser_init(Parser *parser, const char *source) {
     lexer_init(&parser->lexer, source);
     parser->has_error = false;
-    parser_advance(parser);
+    parser->current = lexer_next(&parser->lexer);
+    parser->next = lexer_next(&parser->lexer);
+    if (parser->current.kind == TOKEN_ERROR || parser->next.kind == TOKEN_ERROR) {
+        parser->has_error = true;
+    }
 }
 
 Program *parse_program(Parser *parser) {
