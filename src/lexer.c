@@ -11,6 +11,13 @@ static char lexer_peek(const Lexer *lexer) {
     return lexer->source[lexer->offset];
 }
 
+static char lexer_peek_next(const Lexer *lexer) {
+    if (lexer->offset + 1 >= lexer->length) {
+        return '\0';
+    }
+    return lexer->source[lexer->offset + 1];
+}
+
 static char lexer_advance(Lexer *lexer) {
     char ch = lexer_peek(lexer);
     if (ch == '\0') {
@@ -42,6 +49,25 @@ static void skip_whitespace(Lexer *lexer) {
         char ch = lexer_peek(lexer);
         if (isspace((unsigned char) ch)) {
             lexer_advance(lexer);
+            continue;
+        }
+        if (ch == '/' && lexer_peek_next(lexer) == '/') {
+            while (lexer_peek(lexer) != '\n' && lexer_peek(lexer) != '\0') {
+                lexer_advance(lexer);
+            }
+            continue;
+        }
+        if (ch == '/' && lexer_peek_next(lexer) == '*') {
+            lexer_advance(lexer);
+            lexer_advance(lexer);
+            while (lexer_peek(lexer) != '\0') {
+                if (lexer_peek(lexer) == '*' && lexer_peek_next(lexer) == '/') {
+                    lexer_advance(lexer);
+                    lexer_advance(lexer);
+                    break;
+                }
+                lexer_advance(lexer);
+            }
             continue;
         }
         break;
