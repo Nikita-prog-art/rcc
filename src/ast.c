@@ -35,6 +35,11 @@ static void destroy_expr(Expr *expr) {
     if (expr->kind == EXPR_BINARY) {
         destroy_expr(expr->binary.lhs);
         destroy_expr(expr->binary.rhs);
+    } else if (expr->kind == EXPR_CALL) {
+        for (size_t i = 0; i < expr->call.arg_count; i++) {
+            destroy_expr(expr->call.args[i]);
+        }
+        free(expr->call.args);
     }
     free(expr);
 }
@@ -68,6 +73,7 @@ void program_destroy(Program *program) {
             for (size_t j = 0; j < function->statement_count; j++) {
                 destroy_stmt(function->statements[j]);
             }
+            free(function->params);
             free(function->statements);
             free(function);
         }
@@ -82,6 +88,19 @@ Function *function_create(const char *name, size_t name_length, TypeKind return_
     function->name_length = name_length;
     function->return_type = return_type;
     return function;
+}
+
+void function_append_param(Function *function, const char *name, size_t length, TypeKind type) {
+    if (function->param_count >= function->param_capacity) {
+        size_t next_capacity = function->param_capacity == 0 ? 4 : function->param_capacity * 2;
+        function->params = xrealloc(function->params, next_capacity * sizeof(Param));
+        function->param_capacity = next_capacity;
+    }
+    function->params[function->param_count++] = (Param) {
+        .name = name,
+        .length = length,
+        .type = type
+    };
 }
 
 void function_append_statement(Function *function, Stmt *statement) {
@@ -111,6 +130,23 @@ Expr *expr_create_binary(BinaryOp op, Expr *lhs, Expr *rhs) {
     expr->binary.lhs = lhs;
     expr->binary.rhs = rhs;
     return expr;
+}
+
+Expr *expr_create_call(const char *callee, size_t callee_length) {
+    Expr *expr = xcalloc(1, sizeof(Expr));
+    expr->kind = EXPR_CALL;
+    expr->call.callee = callee;
+    expr->call.callee_length = callee_length;
+    return expr;
+}
+
+void expr_append_call_arg(Expr *expr, Expr *arg) {
+    if (expr->call.arg_count >= expr->call.arg_capacity) {
+        size_t next_capacity = expr->call.arg_capacity == 0 ? 4 : expr->call.arg_capacity * 2;
+        expr->call.args = xrealloc(expr->call.args, next_capacity * sizeof(Expr *));
+        expr->call.arg_capacity = next_capacity;
+    }
+    expr->call.args[expr->call.arg_count++] = arg;
 }
 
 Stmt *stmt_create_let(const char *name, size_t length, TypeKind type, Expr *value) {

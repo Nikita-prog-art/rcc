@@ -17,6 +17,10 @@ typedef struct CodegenContext {
     LLVMContextRef llvm_context;
     LLVMModuleRef module;
     LLVMBuilderRef builder;
+    LLVMValueRef functions[256];
+    LLVMTypeRef function_types[256];
+    const Function *function_defs[256];
+    size_t function_count;
     Local locals[256];
     size_t local_count;
 } CodegenContext;
@@ -61,6 +65,26 @@ static bool define_local(CodegenContext *context, const char *name, size_t lengt
     return true;
 }
 
+static LLVMValueRef lookup_function(const CodegenContext *context, const char *name, size_t length) {
+    for (size_t i = 0; i < context->function_count; i++) {
+        const Function *function = context->function_defs[i];
+        if (same_name(name, length, function->name, function->name_length)) {
+            return context->functions[i];
+        }
+    }
+    return NULL;
+}
+
+static LLVMTypeRef lookup_function_type(const CodegenContext *context, const char *name, size_t length) {
+    for (size_t i = 0; i < context->function_count; i++) {
+        const Function *function = context->function_defs[i];
+        if (same_name(name, length, function->name, function->name_length)) {
+            return context->function_types[i];
+        }
+    }
+    return NULL;
+}
+
 static LLVMValueRef emit_expr(CodegenContext *context, const Expr *expr) {
     switch (expr->kind) {
         case EXPR_INTEGER:
@@ -88,27 +112,71 @@ static LLVMValueRef emit_expr(CodegenContext *context, const Expr *expr) {
                 case BINARY_DIV:
                     return LLVMBuildSDiv(context->builder, lhs, rhs, "divtmp");
             }
+            return NULL;
+        }
+        case EXPR_CALL: {
+            LLVMValueRef callee = lookup_function(context, expr->call.callee, expr->call.callee_length);
+            LLVMTypeRef callee_type = lookup_function_type(context, expr->call.callee, expr->call.callee_length);
+            LLVMValueRef args[256];
+            if (callee == NULL || callee_type == NULL) {
+                fprintf(stderr, "codegen error: undefined function '%.*s'\n",
+                        (int) expr->call.callee_length, expr->call.callee);
+                return NULL;
+            }
+            if (expr->call.arg_count > 256) {
+                fprintf(stderr, "codegen error: too many call args\n");
+                return NULL;
+            }
+            for (size_t i = 0; i < expr->call.arg_count; i++) {
+                args[i] = emit_expr(context, expr->call.args[i]);
+                if (args[i] == NULL) {
+                    return NULL;
+                }
+            }
+            return LLVMBuildCall2(
+                context->builder,
+                callee_type,
+                callee,
+                args,
+                (unsigned) expr->call.arg_count,
+                "calltmp");
         }
     }
     return NULL;
 }
 
-static bool emit_function(CodegenContext *context, const Function *function) {
+static LLVMValueRef declare_function(CodegenContext *context, const Function *function, LLVMTypeRef *out_type) {
+    LLVMTypeRef param_types[256];
+    for (size_t i = 0; i < function->param_count; i++) {
+        param_types[i] = llvm_type(function->params[i].type, context->llvm_context);
+    }
     LLVMTypeRef function_type = LLVMFunctionType(
         llvm_type(function->return_type, context->llvm_context),
-        NULL,
-        0,
+        param_types,
+        (unsigned) function->param_count,
         false);
     char *name = copy_name(function->name, function->name_length);
     if (name == NULL) {
-        return false;
+        return NULL;
     }
     LLVMValueRef llvm_function = LLVMAddFunction(context->module, name, function_type);
     free(name);
+    *out_type = function_type;
+    return llvm_function;
+}
+
+static bool emit_function(CodegenContext *context, const Function *function, LLVMValueRef llvm_function) {
 
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, "entry");
     LLVMPositionBuilderAtEnd(context->builder, entry);
     context->local_count = 0;
+
+    for (size_t i = 0; i < function->param_count; i++) {
+        LLVMValueRef param = LLVMGetParam(llvm_function, (unsigned) i);
+        if (!define_local(context, function->params[i].name, function->params[i].length, param)) {
+            return false;
+        }
+    }
 
     for (size_t i = 0; i < function->statement_count; i++) {
         const Stmt *stmt = function->statements[i];
@@ -146,7 +214,19 @@ bool codegen_emit_ir(const Program *program, const char *output_path) {
     context.builder = LLVMCreateBuilderInContext(context.llvm_context);
 
     for (size_t i = 0; i < program->function_count; i++) {
-        if (!emit_function(&context, program->functions[i])) {
+        LLVMTypeRef function_type = NULL;
+        LLVMValueRef llvm_function = declare_function(&context, program->functions[i], &function_type);
+        if (llvm_function == NULL) {
+            goto cleanup;
+        }
+        context.function_defs[context.function_count] = program->functions[i];
+        context.functions[context.function_count] = llvm_function;
+        context.function_types[context.function_count] = function_type;
+        context.function_count++;
+    }
+
+    for (size_t i = 0; i < context.function_count; i++) {
+        if (!emit_function(&context, context.function_defs[i], context.functions[i])) {
             goto cleanup;
         }
     }

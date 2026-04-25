@@ -14,11 +14,31 @@ typedef struct SymbolTable {
     size_t count;
 } SymbolTable;
 
+typedef struct FunctionSignature {
+    const char *name;
+    size_t length;
+    size_t param_count;
+} FunctionSignature;
+
+typedef struct FunctionTable {
+    FunctionSignature items[256];
+    size_t count;
+} FunctionTable;
+
 static bool same_name(const char *lhs, size_t lhs_len, const char *rhs, size_t rhs_len) {
     return lhs_len == rhs_len && strncmp(lhs, rhs, lhs_len) == 0;
 }
 
-static bool check_expr(const Expr *expr, const SymbolTable *symbols) {
+static const FunctionSignature *lookup_function(const FunctionTable *functions, const char *name, size_t length) {
+    for (size_t i = 0; i < functions->count; i++) {
+        if (same_name(name, length, functions->items[i].name, functions->items[i].length)) {
+            return &functions->items[i];
+        }
+    }
+    return NULL;
+}
+
+static bool check_expr(const Expr *expr, const SymbolTable *symbols, const FunctionTable *functions) {
     switch (expr->kind) {
         case EXPR_INTEGER:
             return true;
@@ -31,7 +51,28 @@ static bool check_expr(const Expr *expr, const SymbolTable *symbols) {
             fprintf(stderr, "semantic error: use of undefined variable '%.*s'\n", (int) expr->name.length, expr->name.name);
             return false;
         case EXPR_BINARY:
-            return check_expr(expr->binary.lhs, symbols) && check_expr(expr->binary.rhs, symbols);
+            return check_expr(expr->binary.lhs, symbols, functions) && check_expr(expr->binary.rhs, symbols, functions);
+        case EXPR_CALL: {
+            const FunctionSignature *signature =
+                lookup_function(functions, expr->call.callee, expr->call.callee_length);
+            if (signature == NULL) {
+                fprintf(stderr, "semantic error: call to undefined function '%.*s'\n",
+                        (int) expr->call.callee_length, expr->call.callee);
+                return false;
+            }
+            if (signature->param_count != expr->call.arg_count) {
+                fprintf(stderr, "semantic error: function '%.*s' expects %zu args, got %zu\n",
+                        (int) expr->call.callee_length, expr->call.callee,
+                        signature->param_count, expr->call.arg_count);
+                return false;
+            }
+            for (size_t i = 0; i < expr->call.arg_count; i++) {
+                if (!check_expr(expr->call.args[i], symbols, functions)) {
+                    return false;
+                }
+            }
+            return true;
+        }
     }
     return false;
 }
@@ -51,14 +92,21 @@ static bool symbol_table_insert(SymbolTable *symbols, const char *name, size_t l
     return true;
 }
 
-static bool check_function(const Function *function) {
+static bool check_function(const Function *function, const FunctionTable *functions) {
     SymbolTable symbols = {0};
     bool has_return = false;
+
+    for (size_t i = 0; i < function->param_count; i++) {
+        const Param *param = &function->params[i];
+        if (!symbol_table_insert(&symbols, param->name, param->length, param->type)) {
+            return false;
+        }
+    }
 
     for (size_t i = 0; i < function->statement_count; i++) {
         const Stmt *stmt = function->statements[i];
         if (stmt->kind == STMT_LET) {
-            if (!check_expr(stmt->let_stmt.value, &symbols)) {
+            if (!check_expr(stmt->let_stmt.value, &symbols, functions)) {
                 return false;
             }
             if (!symbol_table_insert(&symbols, stmt->let_stmt.name, stmt->let_stmt.length, stmt->let_stmt.type)) {
@@ -68,7 +116,7 @@ static bool check_function(const Function *function) {
         }
 
         if (stmt->kind == STMT_RETURN) {
-            if (!check_expr(stmt->return_stmt.value, &symbols)) {
+            if (!check_expr(stmt->return_stmt.value, &symbols, functions)) {
                 return false;
             }
             has_return = true;
@@ -85,19 +133,34 @@ static bool check_function(const Function *function) {
 
 bool semantic_check_program(const Program *program) {
     bool has_main = false;
+    FunctionTable functions = {0};
+
     for (size_t i = 0; i < program->function_count; i++) {
         const Function *function = program->functions[i];
+        if (lookup_function(&functions, function->name, function->name_length) != NULL) {
+            fprintf(stderr, "semantic error: duplicate function '%.*s'\n",
+                    (int) function->name_length, function->name);
+            return false;
+        }
+        functions.items[functions.count++] = (FunctionSignature) {
+            .name = function->name,
+            .length = function->name_length,
+            .param_count = function->param_count
+        };
         if (same_name(function->name, function->name_length, "main", 4)) {
             has_main = true;
-        }
-        if (!check_function(function)) {
-            return false;
         }
     }
 
     if (!has_main) {
         fprintf(stderr, "semantic error: expected fn main() -> i32\n");
         return false;
+    }
+
+    for (size_t i = 0; i < program->function_count; i++) {
+        if (!check_function(program->functions[i], &functions)) {
+            return false;
+        }
     }
     return true;
 }

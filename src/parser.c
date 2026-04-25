@@ -40,6 +40,7 @@ static bool parse_type(Parser *parser, TypeKind *out_type) {
 }
 
 static Expr *parse_expr(Parser *parser);
+static Expr *parse_call(Parser *parser, Token callee);
 
 static Expr *parse_primary(Parser *parser) {
     Token token = parser->current;
@@ -49,6 +50,9 @@ static Expr *parse_primary(Parser *parser) {
     }
     if (token.kind == TOKEN_IDENTIFIER) {
         parser_advance(parser);
+        if (parser->current.kind == TOKEN_LPAREN) {
+            return parse_call(parser, token);
+        }
         return expr_create_name(token.lexeme, token.length);
     }
     if (token.kind == TOKEN_LPAREN) {
@@ -67,6 +71,29 @@ static Expr *parse_primary(Parser *parser) {
             token_kind_name(token.kind));
     parser->has_error = true;
     return NULL;
+}
+
+static Expr *parse_call(Parser *parser, Token callee) {
+    Expr *call = expr_create_call(callee.lexeme, callee.length);
+    if (!parser_expect(parser, TOKEN_LPAREN, "'('")) {
+        return NULL;
+    }
+    while (!parser->has_error && parser->current.kind != TOKEN_RPAREN) {
+        Expr *arg = parse_expr(parser);
+        if (arg == NULL) {
+            return NULL;
+        }
+        expr_append_call_arg(call, arg);
+        if (parser->current.kind == TOKEN_COMMA) {
+            parser_advance(parser);
+            continue;
+        }
+        break;
+    }
+    if (!parser_expect(parser, TOKEN_RPAREN, "')'")) {
+        return NULL;
+    }
+    return call;
 }
 
 static Expr *parse_multiplicative(Parser *parser) {
@@ -163,22 +190,42 @@ static Function *parse_function(Parser *parser) {
     if (!parser_expect(parser, TOKEN_LPAREN, "'('")) {
         return NULL;
     }
+    Function *function = function_create(name.lexeme, name.length, TYPE_I32);
+    while (!parser->has_error && parser->current.kind != TOKEN_RPAREN) {
+        Token param_name = parser->current;
+        if (!parser_expect(parser, TOKEN_IDENTIFIER, "parameter name")) {
+            return function;
+        }
+        if (!parser_expect(parser, TOKEN_COLON, "':'")) {
+            return function;
+        }
+        TypeKind param_type;
+        if (!parse_type(parser, &param_type)) {
+            return function;
+        }
+        function_append_param(function, param_name.lexeme, param_name.length, param_type);
+        if (parser->current.kind == TOKEN_COMMA) {
+            parser_advance(parser);
+            continue;
+        }
+        break;
+    }
     if (!parser_expect(parser, TOKEN_RPAREN, "')'")) {
-        return NULL;
+        return function;
     }
     if (!parser_expect(parser, TOKEN_ARROW, "'->'")) {
-        return NULL;
+        return function;
     }
 
     TypeKind return_type;
     if (!parse_type(parser, &return_type)) {
-        return NULL;
+        return function;
     }
+    function->return_type = return_type;
     if (!parser_expect(parser, TOKEN_LBRACE, "'{'")) {
-        return NULL;
+        return function;
     }
 
-    Function *function = function_create(name.lexeme, name.length, return_type);
     while (!parser->has_error && parser->current.kind != TOKEN_RBRACE && parser->current.kind != TOKEN_EOF) {
         Stmt *statement = parse_statement(parser);
         if (statement == NULL) {
