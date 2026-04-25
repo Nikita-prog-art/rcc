@@ -273,6 +273,22 @@ static Stmt *parse_statement(Parser *parser) {
         return stmt_create_return(value);
     }
 
+    if (parser->current.kind == TOKEN_BREAK) {
+        parser_advance(parser);
+        if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
+            return NULL;
+        }
+        return stmt_create_break();
+    }
+
+    if (parser->current.kind == TOKEN_CONTINUE) {
+        parser_advance(parser);
+        if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
+            return NULL;
+        }
+        return stmt_create_continue();
+    }
+
     if (parser->current.kind == TOKEN_IF) {
         parser_advance(parser);
         Expr *condition = parse_expr(parser);

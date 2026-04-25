@@ -70,6 +70,12 @@ static TokenKind identifier_kind(const char *start, size_t length) {
     if (length == 3 && strncmp(start, "mut", 3) == 0) {
         return TOKEN_MUT;
     }
+    if (length == 5 && strncmp(start, "break", 5) == 0) {
+        return TOKEN_BREAK;
+    }
+    if (length == 8 && strncmp(start, "continue", 8) == 0) {
+        return TOKEN_CONTINUE;
+    }
     if (length == 3 && strncmp(start, "i32", 3) == 0) {
         return TOKEN_I32;
     }
@@ -233,6 +239,10 @@ const char *token_kind_name(TokenKind kind) {
             return "while";
         case TOKEN_MUT:
             return "mut";
+        case TOKEN_BREAK:
+            return "break";
+        case TOKEN_CONTINUE:
+            return "continue";
         case TOKEN_I32:
             return "i32";
         case TOKEN_LPAREN:

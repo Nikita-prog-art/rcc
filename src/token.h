@@ -15,6 +15,8 @@ typedef enum TokenKind {
     TOKEN_ELSE,
     TOKEN_WHILE,
     TOKEN_MUT,
+    TOKEN_BREAK,
+    TOKEN_CONTINUE,
     TOKEN_I32,
     TOKEN_LPAREN,
     TOKEN_RPAREN,

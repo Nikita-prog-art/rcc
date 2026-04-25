@@ -23,6 +23,9 @@ typedef struct CodegenContext {
     size_t function_count;
     Local locals[256];
     size_t local_count;
+    LLVMBasicBlockRef loop_continue_blocks[256];
+    LLVMBasicBlockRef loop_break_blocks[256];
+    size_t loop_depth;
     unsigned temp_counter;
 } CodegenContext;
 
@@ -276,7 +279,8 @@ static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMVal
                              llvm_function)) {
         return false;
     }
-    if (!block_has_terminator(then_block)) {
+    bool then_falls_through = !block_has_terminator(then_block);
+    if (then_falls_through) {
         LLVMBuildBr(context->builder, merge_block);
     }
 
@@ -289,11 +293,12 @@ static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMVal
                              llvm_function)) {
         return false;
     }
-    if (!block_has_terminator(else_block)) {
+    bool else_falls_through = !block_has_terminator(else_block);
+    if (else_falls_through) {
         LLVMBuildBr(context->builder, merge_block);
     }
 
-    if (LLVMGetBasicBlockTerminator(then_block) != NULL && LLVMGetBasicBlockTerminator(else_block) != NULL) {
+    if (!then_falls_through && !else_falls_through) {
         LLVMDeleteBasicBlock(merge_block);
         return true;
     }
@@ -337,13 +342,18 @@ static bool emit_while_statement(CodegenContext *context, const Stmt *stmt, LLVM
     LLVMPositionBuilderAtEnd(context->builder, body_block);
     context->local_count = saved_local_count;
     memcpy(context->locals, saved_locals, sizeof(saved_locals));
+    context->loop_continue_blocks[context->loop_depth] = cond_block;
+    context->loop_break_blocks[context->loop_depth] = exit_block;
+    context->loop_depth++;
     if (!emit_statement_list(context,
                              (const Stmt *const *) stmt->while_stmt.body_statements,
                              stmt->while_stmt.body_count,
                              llvm_function)) {
+        context->loop_depth--;
         return false;
     }
-    if (!block_has_terminator(body_block)) {
+    context->loop_depth--;
+    if (!block_has_terminator(LLVMGetInsertBlock(context->builder))) {
         LLVMBuildBr(context->builder, cond_block);
     }
 
@@ -393,6 +403,24 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
 
     if (stmt->kind == STMT_WHILE) {
         return emit_while_statement(context, stmt, llvm_function);
+    }
+
+    if (stmt->kind == STMT_BREAK) {
+        if (context->loop_depth == 0) {
+            fprintf(stderr, "codegen error: break outside of loop\n");
+            return false;
+        }
+        LLVMBuildBr(context->builder, context->loop_break_blocks[context->loop_depth - 1]);
+        return true;
+    }
+
+    if (stmt->kind == STMT_CONTINUE) {
+        if (context->loop_depth == 0) {
+            fprintf(stderr, "codegen error: continue outside of loop\n");
+            return false;
+        }
+        LLVMBuildBr(context->builder, context->loop_continue_blocks[context->loop_depth - 1]);
+        return true;
     }
 
     return false;

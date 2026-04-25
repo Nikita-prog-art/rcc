@@ -82,6 +82,7 @@ static bool check_statements(const Stmt *const *statements,
                              size_t statement_count,
                              const SymbolTable *input_symbols,
                              const FunctionTable *functions,
+                             size_t loop_depth,
                              bool *always_returns);
 
 static const Symbol *lookup_symbol(const SymbolTable *symbols, const char *name, size_t length) {
@@ -116,6 +117,7 @@ static bool symbol_table_insert(SymbolTable *symbols, const char *name, size_t l
 static bool check_statement(const Stmt *stmt,
                             SymbolTable *symbols,
                             const FunctionTable *functions,
+                            size_t loop_depth,
                             bool *always_returns) {
     if (stmt->kind == STMT_LET) {
         if (!check_expr(stmt->let_stmt.value, symbols, functions)) {
@@ -172,6 +174,7 @@ static bool check_statement(const Stmt *stmt,
                               stmt->if_stmt.then_count,
                               &then_symbols,
                               functions,
+                              loop_depth,
                               &then_returns)) {
             return false;
         }
@@ -179,6 +182,7 @@ static bool check_statement(const Stmt *stmt,
                               stmt->if_stmt.else_count,
                               &else_symbols,
                               functions,
+                              loop_depth,
                               &else_returns)) {
             return false;
         }
@@ -196,10 +200,21 @@ static bool check_statement(const Stmt *stmt,
                               stmt->while_stmt.body_count,
                               &body_symbols,
                               functions,
+                              loop_depth + 1,
                               &body_returns)) {
             return false;
         }
         *always_returns = false;
+        return true;
+    }
+
+    if (stmt->kind == STMT_BREAK || stmt->kind == STMT_CONTINUE) {
+        if (loop_depth == 0) {
+            fprintf(stderr, "semantic error: '%s' used outside of loop\n",
+                    stmt->kind == STMT_BREAK ? "break" : "continue");
+            return false;
+        }
+        *always_returns = true;
         return true;
     }
 
@@ -210,13 +225,14 @@ static bool check_statements(const Stmt *const *statements,
                              size_t statement_count,
                              const SymbolTable *input_symbols,
                              const FunctionTable *functions,
+                             size_t loop_depth,
                              bool *always_returns) {
     SymbolTable symbols = *input_symbols;
     *always_returns = false;
 
     for (size_t i = 0; i < statement_count; i++) {
         bool stmt_returns = false;
-        if (!check_statement(statements[i], &symbols, functions, &stmt_returns)) {
+        if (!check_statement(statements[i], &symbols, functions, loop_depth, &stmt_returns)) {
             return false;
         }
         if (stmt_returns) {
@@ -242,6 +258,7 @@ static bool check_function(const Function *function, const FunctionTable *functi
                           function->statement_count,
                           &symbols,
                           functions,
+                          0,
                           &always_returns)) {
         return false;
     }

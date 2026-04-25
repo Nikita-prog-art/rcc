@@ -76,6 +76,9 @@ static void destroy_stmt(Stmt *stmt) {
             }
             free(stmt->while_stmt.body_statements);
             break;
+        case STMT_BREAK:
+        case STMT_CONTINUE:
+            break;
     }
     free(stmt);
 }
@@ -208,6 +211,18 @@ Stmt *stmt_create_while(Expr *condition) {
     Stmt *stmt = xcalloc(1, sizeof(Stmt));
     stmt->kind = STMT_WHILE;
     stmt->while_stmt.condition = condition;
+    return stmt;
+}
+
+Stmt *stmt_create_break(void) {
+    Stmt *stmt = xcalloc(1, sizeof(Stmt));
+    stmt->kind = STMT_BREAK;
+    return stmt;
+}
+
+Stmt *stmt_create_continue(void) {
+    Stmt *stmt = xcalloc(1, sizeof(Stmt));
+    stmt->kind = STMT_CONTINUE;
     return stmt;
 }
 
