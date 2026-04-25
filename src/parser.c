@@ -293,11 +293,11 @@ static Stmt *parse_if_statement(Parser *parser) {
     if (!parse_block(parser, if_stmt, BLOCK_IF_THEN)) {
         return NULL;
     }
-    if (!parser_expect(parser, TOKEN_ELSE, "'else'")) {
-        return NULL;
-    }
-    if (!parse_else_branch(parser, if_stmt)) {
-        return NULL;
+    if (parser->current.kind == TOKEN_ELSE) {
+        parser_advance(parser);
+        if (!parse_else_branch(parser, if_stmt)) {
+            return NULL;
+        }
     }
     return if_stmt;
 }
