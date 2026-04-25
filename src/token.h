@@ -27,6 +27,7 @@ typedef enum TokenKind {
     TOKEN_COMMA,
     TOKEN_ARROW,
     TOKEN_EQUAL,
+    TOKEN_BANG,
     TOKEN_EQUAL_EQUAL,
     TOKEN_BANG_EQUAL,
     TOKEN_LESS,
@@ -36,6 +37,7 @@ typedef enum TokenKind {
     TOKEN_PLUS,
     TOKEN_MINUS,
     TOKEN_STAR,
+    TOKEN_PERCENT,
     TOKEN_SLASH
 } TokenKind;
 

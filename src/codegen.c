@@ -119,6 +119,25 @@ static LLVMValueRef emit_expr(CodegenContext *context, const Expr *expr) {
                 storage,
                 "loadtmp");
         }
+        case EXPR_UNARY: {
+            LLVMValueRef operand = emit_expr(context, expr->unary.operand);
+            if (operand == NULL) {
+                return NULL;
+            }
+            switch (expr->unary.op) {
+                case UNARY_NEG:
+                    return LLVMBuildNeg(context->builder, operand, "negtmp");
+                case UNARY_NOT: {
+                    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(context->llvm_context), 0, false);
+                    return LLVMBuildZExt(
+                        context->builder,
+                        LLVMBuildICmp(context->builder, LLVMIntEQ, operand, zero, "nottmp"),
+                        LLVMInt32TypeInContext(context->llvm_context),
+                        "noti32");
+                }
+            }
+            return NULL;
+        }
         case EXPR_BINARY: {
             LLVMValueRef lhs = emit_expr(context, expr->binary.lhs);
             LLVMValueRef rhs = emit_expr(context, expr->binary.rhs);
@@ -132,6 +151,8 @@ static LLVMValueRef emit_expr(CodegenContext *context, const Expr *expr) {
                     return LLVMBuildSub(context->builder, lhs, rhs, "subtmp");
                 case BINARY_MUL:
                     return LLVMBuildMul(context->builder, lhs, rhs, "multmp");
+                case BINARY_REM:
+                    return LLVMBuildSRem(context->builder, lhs, rhs, "remtmp");
                 case BINARY_DIV:
                     return LLVMBuildSDiv(context->builder, lhs, rhs, "divtmp");
                 case BINARY_EQ:

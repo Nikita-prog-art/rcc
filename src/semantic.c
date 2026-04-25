@@ -51,6 +51,8 @@ static bool check_expr(const Expr *expr, const SymbolTable *symbols, const Funct
             }
             fprintf(stderr, "semantic error: use of undefined variable '%.*s'\n", (int) expr->name.length, expr->name.name);
             return false;
+        case EXPR_UNARY:
+            return check_expr(expr->unary.operand, symbols, functions);
         case EXPR_BINARY:
             return check_expr(expr->binary.lhs, symbols, functions) && check_expr(expr->binary.rhs, symbols, functions);
         case EXPR_CALL: {

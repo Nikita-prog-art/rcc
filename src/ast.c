@@ -35,6 +35,8 @@ static void destroy_expr(Expr *expr) {
     if (expr->kind == EXPR_BINARY) {
         destroy_expr(expr->binary.lhs);
         destroy_expr(expr->binary.rhs);
+    } else if (expr->kind == EXPR_UNARY) {
+        destroy_expr(expr->unary.operand);
     } else if (expr->kind == EXPR_CALL) {
         for (size_t i = 0; i < expr->call.arg_count; i++) {
             destroy_expr(expr->call.args[i]);
@@ -144,6 +146,14 @@ Expr *expr_create_name(const char *name, size_t length) {
     expr->kind = EXPR_NAME;
     expr->name.name = name;
     expr->name.length = length;
+    return expr;
+}
+
+Expr *expr_create_unary(UnaryOp op, Expr *operand) {
+    Expr *expr = xcalloc(1, sizeof(Expr));
+    expr->kind = EXPR_UNARY;
+    expr->unary.op = op;
+    expr->unary.operand = operand;
     return expr;
 }
 

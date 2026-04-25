@@ -169,6 +169,8 @@ Token lexer_next(Lexer *lexer) {
                 lexer_advance(lexer);
                 token.kind = TOKEN_BANG_EQUAL;
                 token.length = 2;
+            } else {
+                token.kind = TOKEN_BANG;
             }
             break;
         case '<':
@@ -194,6 +196,9 @@ Token lexer_next(Lexer *lexer) {
             break;
         case '*':
             token.kind = TOKEN_STAR;
+            break;
+        case '%':
+            token.kind = TOKEN_PERCENT;
             break;
         case '/':
             token.kind = TOKEN_SLASH;
@@ -263,6 +268,8 @@ const char *token_kind_name(TokenKind kind) {
             return "->";
         case TOKEN_EQUAL:
             return "=";
+        case TOKEN_BANG:
+            return "!";
         case TOKEN_EQUAL_EQUAL:
             return "==";
         case TOKEN_BANG_EQUAL:
@@ -281,6 +288,8 @@ const char *token_kind_name(TokenKind kind) {
             return "-";
         case TOKEN_STAR:
             return "*";
+        case TOKEN_PERCENT:
+            return "%";
         case TOKEN_SLASH:
             return "/";
     }

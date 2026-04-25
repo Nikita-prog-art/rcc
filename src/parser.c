@@ -41,6 +41,7 @@ static bool parse_type(Parser *parser, TypeKind *out_type) {
 
 static Expr *parse_expr(Parser *parser);
 static Expr *parse_call(Parser *parser, Token callee);
+static Expr *parse_primary(Parser *parser);
 static Stmt *parse_statement(Parser *parser);
 
 typedef enum BlockKind {
@@ -67,6 +68,28 @@ static bool parse_block(Parser *parser, Stmt *owner, BlockKind block_kind) {
         }
     }
     return parser_expect(parser, TOKEN_RBRACE, "'}'");
+}
+
+static Expr *parse_unary(Parser *parser) {
+    if (parser->current.kind == TOKEN_MINUS) {
+        parser_advance(parser);
+        Expr *operand = parse_unary(parser);
+        if (operand == NULL) {
+            return NULL;
+        }
+        return expr_create_unary(UNARY_NEG, operand);
+    }
+
+    if (parser->current.kind == TOKEN_BANG) {
+        parser_advance(parser);
+        Expr *operand = parse_unary(parser);
+        if (operand == NULL) {
+            return NULL;
+        }
+        return expr_create_unary(UNARY_NOT, operand);
+    }
+
+    return parse_primary(parser);
 }
 
 static Expr *parse_primary(Parser *parser) {
@@ -124,16 +147,32 @@ static Expr *parse_call(Parser *parser, Token callee) {
 }
 
 static Expr *parse_multiplicative(Parser *parser) {
-    Expr *expr = parse_primary(parser);
+    Expr *expr = parse_unary(parser);
     while (!parser->has_error &&
-           (parser->current.kind == TOKEN_STAR || parser->current.kind == TOKEN_SLASH)) {
+           (parser->current.kind == TOKEN_STAR ||
+            parser->current.kind == TOKEN_SLASH ||
+            parser->current.kind == TOKEN_PERCENT)) {
         TokenKind op = parser->current.kind;
         parser_advance(parser);
-        Expr *rhs = parse_primary(parser);
+        Expr *rhs = parse_unary(parser);
         if (rhs == NULL) {
             return NULL;
         }
-        expr = expr_create_binary(op == TOKEN_STAR ? BINARY_MUL : BINARY_DIV, expr, rhs);
+        BinaryOp binary_op = BINARY_MUL;
+        switch (op) {
+            case TOKEN_STAR:
+                binary_op = BINARY_MUL;
+                break;
+            case TOKEN_SLASH:
+                binary_op = BINARY_DIV;
+                break;
+            case TOKEN_PERCENT:
+                binary_op = BINARY_REM;
+                break;
+            default:
+                break;
+        }
+        expr = expr_create_binary(binary_op, expr, rhs);
     }
     return expr;
 }

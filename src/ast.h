@@ -10,14 +10,21 @@ typedef enum TypeKind {
 typedef enum ExprKind {
     EXPR_INTEGER = 0,
     EXPR_NAME,
+    EXPR_UNARY,
     EXPR_BINARY,
     EXPR_CALL
 } ExprKind;
+
+typedef enum UnaryOp {
+    UNARY_NEG = 0,
+    UNARY_NOT
+} UnaryOp;
 
 typedef enum BinaryOp {
     BINARY_ADD = 0,
     BINARY_SUB,
     BINARY_MUL,
+    BINARY_REM,
     BINARY_DIV,
     BINARY_EQ,
     BINARY_NE,
@@ -45,6 +52,10 @@ struct Expr {
             const char *name;
             size_t length;
         } name;
+        struct {
+            UnaryOp op;
+            Expr *operand;
+        } unary;
         struct {
             BinaryOp op;
             Expr *lhs;
@@ -131,6 +142,7 @@ void function_append_param(Function *function, const char *name, size_t length, 
 void function_append_statement(Function *function, Stmt *statement);
 Expr *expr_create_integer(long value);
 Expr *expr_create_name(const char *name, size_t length);
+Expr *expr_create_unary(UnaryOp op, Expr *operand);
 Expr *expr_create_binary(BinaryOp op, Expr *lhs, Expr *rhs);
 Expr *expr_create_call(const char *callee, size_t callee_length);
 void expr_append_call_arg(Expr *expr, Expr *arg);
