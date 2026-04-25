@@ -8,3 +8,4 @@ fi
 
 git add .gitignore Makefile shell.nix src tests scripts
 git commit -m "$1"
+git push origin "$(git branch --show-current)"
