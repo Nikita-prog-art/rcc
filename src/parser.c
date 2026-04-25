@@ -416,6 +416,7 @@ static Stmt *parse_statement(Parser *parser) {
     }
 
     if (token_starts_expr(parser->current.kind)) {
+        bool starts_with_identifier = parser->current.kind == TOKEN_IDENTIFIER;
         Expr *value = parse_expr(parser);
         if (value == NULL) {
             return NULL;
@@ -430,6 +431,14 @@ static Stmt *parse_statement(Parser *parser) {
         }
         if (parser->current.kind == TOKEN_RBRACE) {
             return stmt_create_return(value);
+        }
+        if (starts_with_identifier) {
+            fprintf(stderr,
+                    "parse error at %zu:%zu: expected '=' for assignment or block end for implicit return\n",
+                    parser->current.line,
+                    parser->current.column);
+            parser->has_error = true;
+            return NULL;
         }
         fprintf(stderr,
                 "parse error at %zu:%zu: expected ';' or block end after expression\n",
