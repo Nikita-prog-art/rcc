@@ -1,0 +1,4 @@
+fn main() -> i32 {
+    /* never closed
+    return 0;
+}

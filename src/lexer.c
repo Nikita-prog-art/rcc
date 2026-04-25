@@ -60,13 +60,19 @@ static void skip_whitespace(Lexer *lexer) {
         if (ch == '/' && lexer_peek_next(lexer) == '*') {
             lexer_advance(lexer);
             lexer_advance(lexer);
+            bool closed = false;
             while (lexer_peek(lexer) != '\0') {
                 if (lexer_peek(lexer) == '*' && lexer_peek_next(lexer) == '/') {
                     lexer_advance(lexer);
                     lexer_advance(lexer);
+                    closed = true;
                     break;
                 }
                 lexer_advance(lexer);
+            }
+            if (!closed) {
+                fprintf(stderr, "lexer error at %zu:%zu: unterminated block comment\n", lexer->line, lexer->column);
+                break;
             }
             continue;
         }
