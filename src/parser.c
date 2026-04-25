@@ -43,7 +43,13 @@ static Expr *parse_expr(Parser *parser);
 static Expr *parse_call(Parser *parser, Token callee);
 static Stmt *parse_statement(Parser *parser);
 
-static bool parse_block(Parser *parser, Stmt *if_stmt, bool is_then_block) {
+typedef enum BlockKind {
+    BLOCK_IF_THEN = 0,
+    BLOCK_IF_ELSE,
+    BLOCK_WHILE_BODY
+} BlockKind;
+
+static bool parse_block(Parser *parser, Stmt *owner, BlockKind block_kind) {
     if (!parser_expect(parser, TOKEN_LBRACE, "'{'")) {
         return false;
     }
@@ -52,10 +58,12 @@ static bool parse_block(Parser *parser, Stmt *if_stmt, bool is_then_block) {
         if (statement == NULL) {
             return false;
         }
-        if (is_then_block) {
-            stmt_append_then_statement(if_stmt, statement);
+        if (block_kind == BLOCK_IF_THEN) {
+            stmt_append_then_statement(owner, statement);
+        } else if (block_kind == BLOCK_IF_ELSE) {
+            stmt_append_else_statement(owner, statement);
         } else {
-            stmt_append_else_statement(if_stmt, statement);
+            stmt_append_while_statement(owner, statement);
         }
     }
     return parser_expect(parser, TOKEN_RBRACE, "'}'");
@@ -202,6 +210,11 @@ static Expr *parse_expr(Parser *parser) {
 static Stmt *parse_statement(Parser *parser) {
     if (parser->current.kind == TOKEN_LET) {
         parser_advance(parser);
+        bool is_mutable = false;
+        if (parser->current.kind == TOKEN_MUT) {
+            is_mutable = true;
+            parser_advance(parser);
+        }
         Token name = parser->current;
         if (!parser_expect(parser, TOKEN_IDENTIFIER, "identifier")) {
             return NULL;
@@ -223,7 +236,29 @@ static Stmt *parse_statement(Parser *parser) {
         if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
             return NULL;
         }
-        return stmt_create_let(name.lexeme, name.length, type, value);
+        return stmt_create_let(name.lexeme, name.length, type, is_mutable, value);
+    }
+
+    if (parser->current.kind == TOKEN_IDENTIFIER) {
+        Token name = parser->current;
+        parser_advance(parser);
+        if (parser->current.kind == TOKEN_EQUAL) {
+            parser_advance(parser);
+            Expr *value = parse_expr(parser);
+            if (value == NULL) {
+                return NULL;
+            }
+            if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
+                return NULL;
+            }
+            return stmt_create_assign(name.lexeme, name.length, value);
+        }
+        fprintf(stderr,
+                "parse error at %zu:%zu: expected assignment after identifier\n",
+                parser->current.line,
+                parser->current.column);
+        parser->has_error = true;
+        return NULL;
     }
 
     if (parser->current.kind == TOKEN_RETURN) {
@@ -245,16 +280,29 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         Stmt *if_stmt = stmt_create_if(condition);
-        if (!parse_block(parser, if_stmt, true)) {
+        if (!parse_block(parser, if_stmt, BLOCK_IF_THEN)) {
             return NULL;
         }
         if (!parser_expect(parser, TOKEN_ELSE, "'else'")) {
             return NULL;
         }
-        if (!parse_block(parser, if_stmt, false)) {
+        if (!parse_block(parser, if_stmt, BLOCK_IF_ELSE)) {
             return NULL;
         }
         return if_stmt;
+    }
+
+    if (parser->current.kind == TOKEN_WHILE) {
+        parser_advance(parser);
+        Expr *condition = parse_expr(parser);
+        if (condition == NULL) {
+            return NULL;
+        }
+        Stmt *while_stmt = stmt_create_while(condition);
+        if (!parse_block(parser, while_stmt, BLOCK_WHILE_BODY)) {
+            return NULL;
+        }
+        return while_stmt;
     }
 
     fprintf(stderr,

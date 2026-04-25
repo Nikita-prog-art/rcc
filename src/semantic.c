@@ -7,6 +7,7 @@ typedef struct Symbol {
     const char *name;
     size_t length;
     TypeKind type;
+    bool is_mutable;
 } Symbol;
 
 typedef struct SymbolTable {
@@ -83,7 +84,16 @@ static bool check_statements(const Stmt *const *statements,
                              const FunctionTable *functions,
                              bool *always_returns);
 
-static bool symbol_table_insert(SymbolTable *symbols, const char *name, size_t length, TypeKind type) {
+static const Symbol *lookup_symbol(const SymbolTable *symbols, const char *name, size_t length) {
+    for (size_t i = 0; i < symbols->count; i++) {
+        if (same_name(name, length, symbols->items[i].name, symbols->items[i].length)) {
+            return &symbols->items[i];
+        }
+    }
+    return NULL;
+}
+
+static bool symbol_table_insert(SymbolTable *symbols, const char *name, size_t length, TypeKind type, bool is_mutable) {
     for (size_t i = 0; i < symbols->count; i++) {
         if (same_name(name, length, symbols->items[i].name, symbols->items[i].length)) {
             fprintf(stderr, "semantic error: duplicate variable '%.*s'\n", (int) length, name);
@@ -94,7 +104,12 @@ static bool symbol_table_insert(SymbolTable *symbols, const char *name, size_t l
         fprintf(stderr, "semantic error: too many local variables\n");
         return false;
     }
-    symbols->items[symbols->count++] = (Symbol) {.name = name, .length = length, .type = type};
+    symbols->items[symbols->count++] = (Symbol) {
+        .name = name,
+        .length = length,
+        .type = type,
+        .is_mutable = is_mutable
+    };
     return true;
 }
 
@@ -106,7 +121,30 @@ static bool check_statement(const Stmt *stmt,
         if (!check_expr(stmt->let_stmt.value, symbols, functions)) {
             return false;
         }
-        if (!symbol_table_insert(symbols, stmt->let_stmt.name, stmt->let_stmt.length, stmt->let_stmt.type)) {
+        if (!symbol_table_insert(symbols,
+                                 stmt->let_stmt.name,
+                                 stmt->let_stmt.length,
+                                 stmt->let_stmt.type,
+                                 stmt->let_stmt.is_mutable)) {
+            return false;
+        }
+        *always_returns = false;
+        return true;
+    }
+
+    if (stmt->kind == STMT_ASSIGN) {
+        const Symbol *symbol = lookup_symbol(symbols, stmt->assign_stmt.name, stmt->assign_stmt.length);
+        if (symbol == NULL) {
+            fprintf(stderr, "semantic error: assignment to undefined variable '%.*s'\n",
+                    (int) stmt->assign_stmt.length, stmt->assign_stmt.name);
+            return false;
+        }
+        if (!symbol->is_mutable) {
+            fprintf(stderr, "semantic error: variable '%.*s' is not mutable\n",
+                    (int) stmt->assign_stmt.length, stmt->assign_stmt.name);
+            return false;
+        }
+        if (!check_expr(stmt->assign_stmt.value, symbols, functions)) {
             return false;
         }
         *always_returns = false;
@@ -148,6 +186,23 @@ static bool check_statement(const Stmt *stmt,
         return true;
     }
 
+    if (stmt->kind == STMT_WHILE) {
+        bool body_returns = false;
+        SymbolTable body_symbols = *symbols;
+        if (!check_expr(stmt->while_stmt.condition, symbols, functions)) {
+            return false;
+        }
+        if (!check_statements((const Stmt *const *) stmt->while_stmt.body_statements,
+                              stmt->while_stmt.body_count,
+                              &body_symbols,
+                              functions,
+                              &body_returns)) {
+            return false;
+        }
+        *always_returns = false;
+        return true;
+    }
+
     return false;
 }
 
@@ -178,7 +233,7 @@ static bool check_function(const Function *function, const FunctionTable *functi
 
     for (size_t i = 0; i < function->param_count; i++) {
         const Param *param = &function->params[i];
-        if (!symbol_table_insert(&symbols, param->name, param->length, param->type)) {
+        if (!symbol_table_insert(&symbols, param->name, param->length, param->type, false)) {
             return false;
         }
     }

@@ -10,7 +10,7 @@
 typedef struct Local {
     const char *name;
     size_t length;
-    LLVMValueRef value;
+    LLVMValueRef storage;
 } Local;
 
 typedef struct CodegenContext {
@@ -51,18 +51,32 @@ static LLVMTypeRef llvm_type(TypeKind type, LLVMContextRef llvm_context) {
 static LLVMValueRef lookup_local(const CodegenContext *context, const char *name, size_t length) {
     for (size_t i = 0; i < context->local_count; i++) {
         if (same_name(name, length, context->locals[i].name, context->locals[i].length)) {
-            return context->locals[i].value;
+            return context->locals[i].storage;
         }
     }
     return NULL;
 }
 
-static bool define_local(CodegenContext *context, const char *name, size_t length, LLVMValueRef value) {
+static LLVMValueRef create_entry_alloca(CodegenContext *context, LLVMValueRef llvm_function, const char *name) {
+    LLVMBuilderRef builder = LLVMCreateBuilderInContext(context->llvm_context);
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(llvm_function);
+    LLVMValueRef first = LLVMGetFirstInstruction(entry);
+    if (first != NULL) {
+        LLVMPositionBuilderBefore(builder, first);
+    } else {
+        LLVMPositionBuilderAtEnd(builder, entry);
+    }
+    LLVMValueRef alloca_inst = LLVMBuildAlloca(builder, LLVMInt32TypeInContext(context->llvm_context), name);
+    LLVMDisposeBuilder(builder);
+    return alloca_inst;
+}
+
+static bool define_local(CodegenContext *context, const char *name, size_t length, LLVMValueRef storage) {
     if (context->local_count >= 256) {
         fprintf(stderr, "codegen error: too many locals\n");
         return false;
     }
-    context->locals[context->local_count++] = (Local) {.name = name, .length = length, .value = value};
+    context->locals[context->local_count++] = (Local) {.name = name, .length = length, .storage = storage};
     return true;
 }
 
@@ -91,11 +105,16 @@ static LLVMValueRef emit_expr(CodegenContext *context, const Expr *expr) {
         case EXPR_INTEGER:
             return LLVMConstInt(LLVMInt32TypeInContext(context->llvm_context), (unsigned long long) expr->integer_value, true);
         case EXPR_NAME: {
-            LLVMValueRef value = lookup_local(context, expr->name.name, expr->name.length);
-            if (value == NULL) {
+            LLVMValueRef storage = lookup_local(context, expr->name.name, expr->name.length);
+            if (storage == NULL) {
                 fprintf(stderr, "codegen error: undefined variable '%.*s'\n", (int) expr->name.length, expr->name.name);
+                return NULL;
             }
-            return value;
+            return LLVMBuildLoad2(
+                context->builder,
+                LLVMInt32TypeInContext(context->llvm_context),
+                storage,
+                "loadtmp");
         }
         case EXPR_BINARY: {
             LLVMValueRef lhs = emit_expr(context, expr->binary.lhs);
@@ -285,10 +304,78 @@ static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMVal
     return true;
 }
 
+static bool emit_while_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
+    char cond_name[32];
+    char body_name[32];
+    char exit_name[32];
+    Local saved_locals[256];
+    size_t saved_local_count = context->local_count;
+
+    memcpy(saved_locals, context->locals, sizeof(saved_locals));
+    snprintf(cond_name, sizeof(cond_name), "while_cond_%u", context->temp_counter);
+    snprintf(body_name, sizeof(body_name), "while_body_%u", context->temp_counter);
+    snprintf(exit_name, sizeof(exit_name), "while_end_%u", context->temp_counter);
+    context->temp_counter++;
+
+    LLVMBasicBlockRef cond_block = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, cond_name);
+    LLVMBasicBlockRef body_block = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, body_name);
+    LLVMBasicBlockRef exit_block = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, exit_name);
+
+    LLVMBuildBr(context->builder, cond_block);
+
+    LLVMPositionBuilderAtEnd(context->builder, cond_block);
+    context->local_count = saved_local_count;
+    memcpy(context->locals, saved_locals, sizeof(saved_locals));
+    LLVMValueRef condition_value = emit_expr(context, stmt->while_stmt.condition);
+    if (condition_value == NULL) {
+        return false;
+    }
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(context->llvm_context), 0, false);
+    LLVMValueRef is_true = LLVMBuildICmp(context->builder, LLVMIntNE, condition_value, zero, "whilecond");
+    LLVMBuildCondBr(context->builder, is_true, body_block, exit_block);
+
+    LLVMPositionBuilderAtEnd(context->builder, body_block);
+    context->local_count = saved_local_count;
+    memcpy(context->locals, saved_locals, sizeof(saved_locals));
+    if (!emit_statement_list(context,
+                             (const Stmt *const *) stmt->while_stmt.body_statements,
+                             stmt->while_stmt.body_count,
+                             llvm_function)) {
+        return false;
+    }
+    if (!block_has_terminator(body_block)) {
+        LLVMBuildBr(context->builder, cond_block);
+    }
+
+    LLVMPositionBuilderAtEnd(context->builder, exit_block);
+    context->local_count = saved_local_count;
+    memcpy(context->locals, saved_locals, sizeof(saved_locals));
+    return true;
+}
+
 static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
     if (stmt->kind == STMT_LET) {
         LLVMValueRef value = emit_expr(context, stmt->let_stmt.value);
-        return value != NULL && define_local(context, stmt->let_stmt.name, stmt->let_stmt.length, value);
+        char *name = copy_name(stmt->let_stmt.name, stmt->let_stmt.length);
+        LLVMValueRef storage;
+        if (value == NULL || name == NULL) {
+            free(name);
+            return false;
+        }
+        storage = create_entry_alloca(context, llvm_function, name);
+        free(name);
+        LLVMBuildStore(context->builder, value, storage);
+        return define_local(context, stmt->let_stmt.name, stmt->let_stmt.length, storage);
+    }
+
+    if (stmt->kind == STMT_ASSIGN) {
+        LLVMValueRef storage = lookup_local(context, stmt->assign_stmt.name, stmt->assign_stmt.length);
+        LLVMValueRef value = emit_expr(context, stmt->assign_stmt.value);
+        if (storage == NULL || value == NULL) {
+            return false;
+        }
+        LLVMBuildStore(context->builder, value, storage);
+        return true;
     }
 
     if (stmt->kind == STMT_RETURN) {
@@ -304,6 +391,10 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
         return emit_if_statement(context, stmt, llvm_function);
     }
 
+    if (stmt->kind == STMT_WHILE) {
+        return emit_while_statement(context, stmt, llvm_function);
+    }
+
     return false;
 }
 
@@ -315,7 +406,15 @@ static bool emit_function(CodegenContext *context, const Function *function, LLV
 
     for (size_t i = 0; i < function->param_count; i++) {
         LLVMValueRef param = LLVMGetParam(llvm_function, (unsigned) i);
-        if (!define_local(context, function->params[i].name, function->params[i].length, param)) {
+        char *name = copy_name(function->params[i].name, function->params[i].length);
+        LLVMValueRef storage;
+        if (name == NULL) {
+            return false;
+        }
+        storage = create_entry_alloca(context, llvm_function, name);
+        free(name);
+        LLVMBuildStore(context->builder, param, storage);
+        if (!define_local(context, function->params[i].name, function->params[i].length, storage)) {
             return false;
         }
     }

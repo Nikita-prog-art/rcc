@@ -52,6 +52,9 @@ static void destroy_stmt(Stmt *stmt) {
         case STMT_LET:
             destroy_expr(stmt->let_stmt.value);
             break;
+        case STMT_ASSIGN:
+            destroy_expr(stmt->assign_stmt.value);
+            break;
         case STMT_RETURN:
             destroy_expr(stmt->return_stmt.value);
             break;
@@ -65,6 +68,13 @@ static void destroy_stmt(Stmt *stmt) {
             }
             free(stmt->if_stmt.then_statements);
             free(stmt->if_stmt.else_statements);
+            break;
+        case STMT_WHILE:
+            destroy_expr(stmt->while_stmt.condition);
+            for (size_t i = 0; i < stmt->while_stmt.body_count; i++) {
+                destroy_stmt(stmt->while_stmt.body_statements[i]);
+            }
+            free(stmt->while_stmt.body_statements);
             break;
     }
     free(stmt);
@@ -160,13 +170,23 @@ void expr_append_call_arg(Expr *expr, Expr *arg) {
     expr->call.args[expr->call.arg_count++] = arg;
 }
 
-Stmt *stmt_create_let(const char *name, size_t length, TypeKind type, Expr *value) {
+Stmt *stmt_create_let(const char *name, size_t length, TypeKind type, bool is_mutable, Expr *value) {
     Stmt *stmt = xcalloc(1, sizeof(Stmt));
     stmt->kind = STMT_LET;
     stmt->let_stmt.name = name;
     stmt->let_stmt.length = length;
     stmt->let_stmt.type = type;
+    stmt->let_stmt.is_mutable = is_mutable;
     stmt->let_stmt.value = value;
+    return stmt;
+}
+
+Stmt *stmt_create_assign(const char *name, size_t length, Expr *value) {
+    Stmt *stmt = xcalloc(1, sizeof(Stmt));
+    stmt->kind = STMT_ASSIGN;
+    stmt->assign_stmt.name = name;
+    stmt->assign_stmt.length = length;
+    stmt->assign_stmt.value = value;
     return stmt;
 }
 
@@ -184,6 +204,13 @@ Stmt *stmt_create_if(Expr *condition) {
     return stmt;
 }
 
+Stmt *stmt_create_while(Expr *condition) {
+    Stmt *stmt = xcalloc(1, sizeof(Stmt));
+    stmt->kind = STMT_WHILE;
+    stmt->while_stmt.condition = condition;
+    return stmt;
+}
+
 void stmt_append_then_statement(Stmt *stmt, Stmt *child) {
     grow_ptr_array((void ***) &stmt->if_stmt.then_statements, &stmt->if_stmt.then_capacity, stmt->if_stmt.then_count);
     stmt->if_stmt.then_statements[stmt->if_stmt.then_count++] = child;
@@ -192,6 +219,11 @@ void stmt_append_then_statement(Stmt *stmt, Stmt *child) {
 void stmt_append_else_statement(Stmt *stmt, Stmt *child) {
     grow_ptr_array((void ***) &stmt->if_stmt.else_statements, &stmt->if_stmt.else_capacity, stmt->if_stmt.else_count);
     stmt->if_stmt.else_statements[stmt->if_stmt.else_count++] = child;
+}
+
+void stmt_append_while_statement(Stmt *stmt, Stmt *child) {
+    grow_ptr_array((void ***) &stmt->while_stmt.body_statements, &stmt->while_stmt.body_capacity, stmt->while_stmt.body_count);
+    stmt->while_stmt.body_statements[stmt->while_stmt.body_count++] = child;
 }
 
 void program_append_function(Program *program, Function *function) {

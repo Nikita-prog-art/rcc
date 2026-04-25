@@ -64,6 +64,12 @@ static TokenKind identifier_kind(const char *start, size_t length) {
     if (length == 4 && strncmp(start, "else", 4) == 0) {
         return TOKEN_ELSE;
     }
+    if (length == 5 && strncmp(start, "while", 5) == 0) {
+        return TOKEN_WHILE;
+    }
+    if (length == 3 && strncmp(start, "mut", 3) == 0) {
+        return TOKEN_MUT;
+    }
     if (length == 3 && strncmp(start, "i32", 3) == 0) {
         return TOKEN_I32;
     }
@@ -223,6 +229,10 @@ const char *token_kind_name(TokenKind kind) {
             return "if";
         case TOKEN_ELSE:
             return "else";
+        case TOKEN_WHILE:
+            return "while";
+        case TOKEN_MUT:
+            return "mut";
         case TOKEN_I32:
             return "i32";
         case TOKEN_LPAREN:
