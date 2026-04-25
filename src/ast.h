@@ -77,6 +77,7 @@ typedef enum StmtKind {
     STMT_IF,
     STMT_ASSIGN,
     STMT_WHILE,
+    STMT_BLOCK,
     STMT_BREAK,
     STMT_CONTINUE
 } StmtKind;
@@ -114,6 +115,11 @@ struct Stmt {
             size_t body_count;
             size_t body_capacity;
         } while_stmt;
+        struct {
+            Stmt **statements;
+            size_t statement_count;
+            size_t statement_capacity;
+        } block_stmt;
     };
 };
 
@@ -151,11 +157,13 @@ Stmt *stmt_create_assign(const char *name, size_t length, Expr *value);
 Stmt *stmt_create_return(Expr *value);
 Stmt *stmt_create_if(Expr *condition);
 Stmt *stmt_create_while(Expr *condition);
+Stmt *stmt_create_block(void);
 Stmt *stmt_create_break(void);
 Stmt *stmt_create_continue(void);
 void stmt_append_then_statement(Stmt *stmt, Stmt *child);
 void stmt_append_else_statement(Stmt *stmt, Stmt *child);
 void stmt_append_while_statement(Stmt *stmt, Stmt *child);
+void stmt_append_block_statement(Stmt *stmt, Stmt *child);
 void program_append_function(Program *program, Function *function);
 
 #endif

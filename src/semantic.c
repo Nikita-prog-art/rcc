@@ -88,16 +88,21 @@ static bool check_statements(const Stmt *const *statements,
                              bool *always_returns);
 
 static const Symbol *lookup_symbol(const SymbolTable *symbols, const char *name, size_t length) {
-    for (size_t i = 0; i < symbols->count; i++) {
-        if (same_name(name, length, symbols->items[i].name, symbols->items[i].length)) {
-            return &symbols->items[i];
+    for (size_t i = symbols->count; i > 0; i--) {
+        if (same_name(name, length, symbols->items[i - 1].name, symbols->items[i - 1].length)) {
+            return &symbols->items[i - 1];
         }
     }
     return NULL;
 }
 
-static bool symbol_table_insert(SymbolTable *symbols, const char *name, size_t length, TypeKind type, bool is_mutable) {
-    for (size_t i = 0; i < symbols->count; i++) {
+static bool symbol_table_insert(SymbolTable *symbols,
+                                size_t scope_start,
+                                const char *name,
+                                size_t length,
+                                TypeKind type,
+                                bool is_mutable) {
+    for (size_t i = scope_start; i < symbols->count; i++) {
         if (same_name(name, length, symbols->items[i].name, symbols->items[i].length)) {
             fprintf(stderr, "semantic error: duplicate variable '%.*s'\n", (int) length, name);
             return false;
@@ -118,6 +123,7 @@ static bool symbol_table_insert(SymbolTable *symbols, const char *name, size_t l
 
 static bool check_statement(const Stmt *stmt,
                             SymbolTable *symbols,
+                            size_t scope_start,
                             const FunctionTable *functions,
                             size_t loop_depth,
                             bool *always_returns) {
@@ -126,6 +132,7 @@ static bool check_statement(const Stmt *stmt,
             return false;
         }
         if (!symbol_table_insert(symbols,
+                                 scope_start,
                                  stmt->let_stmt.name,
                                  stmt->let_stmt.length,
                                  stmt->let_stmt.type,
@@ -210,6 +217,19 @@ static bool check_statement(const Stmt *stmt,
         return true;
     }
 
+    if (stmt->kind == STMT_BLOCK) {
+        SymbolTable block_symbols = *symbols;
+        if (!check_statements((const Stmt *const *) stmt->block_stmt.statements,
+                              stmt->block_stmt.statement_count,
+                              &block_symbols,
+                              functions,
+                              loop_depth,
+                              always_returns)) {
+            return false;
+        }
+        return true;
+    }
+
     if (stmt->kind == STMT_BREAK || stmt->kind == STMT_CONTINUE) {
         if (loop_depth == 0) {
             fprintf(stderr, "semantic error: '%s' used outside of loop\n",
@@ -230,11 +250,12 @@ static bool check_statements(const Stmt *const *statements,
                              size_t loop_depth,
                              bool *always_returns) {
     SymbolTable symbols = *input_symbols;
+    size_t scope_start = input_symbols->count;
     *always_returns = false;
 
     for (size_t i = 0; i < statement_count; i++) {
         bool stmt_returns = false;
-        if (!check_statement(statements[i], &symbols, functions, loop_depth, &stmt_returns)) {
+        if (!check_statement(statements[i], &symbols, scope_start, functions, loop_depth, &stmt_returns)) {
             return false;
         }
         if (stmt_returns) {
@@ -251,7 +272,7 @@ static bool check_function(const Function *function, const FunctionTable *functi
 
     for (size_t i = 0; i < function->param_count; i++) {
         const Param *param = &function->params[i];
-        if (!symbol_table_insert(&symbols, param->name, param->length, param->type, false)) {
+        if (!symbol_table_insert(&symbols, 0, param->name, param->length, param->type, false)) {
             return false;
         }
     }

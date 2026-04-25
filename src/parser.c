@@ -47,7 +47,8 @@ static Stmt *parse_statement(Parser *parser);
 typedef enum BlockKind {
     BLOCK_IF_THEN = 0,
     BLOCK_IF_ELSE,
-    BLOCK_WHILE_BODY
+    BLOCK_WHILE_BODY,
+    BLOCK_STANDALONE
 } BlockKind;
 
 static bool parse_block(Parser *parser, Stmt *owner, BlockKind block_kind) {
@@ -63,8 +64,10 @@ static bool parse_block(Parser *parser, Stmt *owner, BlockKind block_kind) {
             stmt_append_then_statement(owner, statement);
         } else if (block_kind == BLOCK_IF_ELSE) {
             stmt_append_else_statement(owner, statement);
-        } else {
+        } else if (block_kind == BLOCK_WHILE_BODY) {
             stmt_append_while_statement(owner, statement);
+        } else {
+            stmt_append_block_statement(owner, statement);
         }
     }
     return parser_expect(parser, TOKEN_RBRACE, "'}'");
@@ -358,6 +361,14 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         return while_stmt;
+    }
+
+    if (parser->current.kind == TOKEN_LBRACE) {
+        Stmt *block_stmt = stmt_create_block();
+        if (!parse_block(parser, block_stmt, BLOCK_STANDALONE)) {
+            return NULL;
+        }
+        return block_stmt;
     }
 
     fprintf(stderr,

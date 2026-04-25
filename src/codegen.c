@@ -266,6 +266,20 @@ static bool emit_statement_list(CodegenContext *context,
     return true;
 }
 
+static bool emit_block_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
+    size_t saved_local_count = context->local_count;
+    if (!emit_statement_list(context,
+                             (const Stmt *const *) stmt->block_stmt.statements,
+                             stmt->block_stmt.statement_count,
+                             llvm_function)) {
+        return false;
+    }
+    if (!block_has_terminator(LLVMGetInsertBlock(context->builder))) {
+        context->local_count = saved_local_count;
+    }
+    return true;
+}
+
 static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
     LLVMValueRef condition_value = emit_expr(context, stmt->if_stmt.condition);
     char then_name[32];
@@ -424,6 +438,10 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
 
     if (stmt->kind == STMT_WHILE) {
         return emit_while_statement(context, stmt, llvm_function);
+    }
+
+    if (stmt->kind == STMT_BLOCK) {
+        return emit_block_statement(context, stmt, llvm_function);
     }
 
     if (stmt->kind == STMT_BREAK) {
