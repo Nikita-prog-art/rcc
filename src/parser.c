@@ -155,6 +155,9 @@ static Expr *parse_call(Parser *parser, Token callee) {
         expr_append_call_arg(call, arg);
         if (parser->current.kind == TOKEN_COMMA) {
             parser_advance(parser);
+            if (parser->current.kind == TOKEN_RPAREN) {
+                break;
+            }
             continue;
         }
         break;
@@ -437,6 +440,9 @@ static Function *parse_function(Parser *parser) {
         function_append_param(function, param_name.lexeme, param_name.length, param_type);
         if (parser->current.kind == TOKEN_COMMA) {
             parser_advance(parser);
+            if (parser->current.kind == TOKEN_RPAREN) {
+                break;
+            }
             continue;
         }
         break;
