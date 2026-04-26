@@ -160,11 +160,13 @@ static Expr *parse_primary(Parser *parser) {
 static Expr *parse_call(Parser *parser, Token callee) {
     Expr *call = expr_create_call(callee.lexeme, callee.length);
     if (!parser_expect(parser, TOKEN_LPAREN, "'('")) {
+        expr_destroy(call);
         return NULL;
     }
     while (!parser->has_error && parser->current.kind != TOKEN_RPAREN) {
         Expr *arg = parse_expr(parser);
         if (arg == NULL) {
+            expr_destroy(call);
             return NULL;
         }
         expr_append_call_arg(call, arg);
@@ -178,6 +180,7 @@ static Expr *parse_call(Parser *parser, Token callee) {
         break;
     }
     if (!parser_expect(parser, TOKEN_RPAREN, "')'")) {
+        expr_destroy(call);
         return NULL;
     }
     return call;
@@ -291,11 +294,13 @@ static Stmt *parse_if_statement(Parser *parser) {
     }
     Stmt *if_stmt = stmt_create_if(condition);
     if (!parse_block(parser, if_stmt, BLOCK_IF_THEN)) {
+        stmt_destroy(if_stmt);
         return NULL;
     }
     if (parser->current.kind == TOKEN_ELSE) {
         parser_advance(parser);
         if (!parse_else_branch(parser, if_stmt)) {
+            stmt_destroy(if_stmt);
             return NULL;
         }
     }
@@ -334,6 +339,7 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
+            expr_destroy(value);
             return NULL;
         }
         return stmt_create_let(name.lexeme, name.length, type, is_mutable, value);
@@ -348,6 +354,7 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
+            expr_destroy(value);
             return NULL;
         }
         return stmt_create_assign(name.lexeme, name.length, value);
@@ -360,6 +367,7 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
+            expr_destroy(value);
             return NULL;
         }
         return stmt_create_return(value);
@@ -402,6 +410,7 @@ static Stmt *parse_statement(Parser *parser) {
         parser_advance(parser);
         Stmt *loop_stmt = stmt_create_loop();
         if (!parse_block(parser, loop_stmt, BLOCK_LOOP_BODY)) {
+            stmt_destroy(loop_stmt);
             return NULL;
         }
         return loop_stmt;
@@ -410,6 +419,7 @@ static Stmt *parse_statement(Parser *parser) {
     if (parser->current.kind == TOKEN_LBRACE) {
         Stmt *block_stmt = stmt_create_block();
         if (!parse_block(parser, block_stmt, BLOCK_STANDALONE)) {
+            stmt_destroy(block_stmt);
             return NULL;
         }
         return block_stmt;
@@ -427,6 +437,7 @@ static Stmt *parse_statement(Parser *parser) {
                     parser->current.line,
                     parser->current.column);
             parser->has_error = true;
+            expr_destroy(value);
             return NULL;
         }
         if (parser->current.kind == TOKEN_RBRACE) {
@@ -438,6 +449,7 @@ static Stmt *parse_statement(Parser *parser) {
                     parser->current.line,
                     parser->current.column);
             parser->has_error = true;
+            expr_destroy(value);
             return NULL;
         }
         fprintf(stderr,
@@ -445,6 +457,7 @@ static Stmt *parse_statement(Parser *parser) {
                 parser->current.line,
                 parser->current.column);
         parser->has_error = true;
+        expr_destroy(value);
         return NULL;
     }
 

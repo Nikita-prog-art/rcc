@@ -54,6 +54,12 @@ static bool check_expr(const Expr *expr, const SymbolTable *symbols, const Funct
         case EXPR_UNARY:
             return check_expr(expr->unary.operand, symbols, functions);
         case EXPR_BINARY:
+            if ((expr->binary.op == BINARY_DIV || expr->binary.op == BINARY_REM) &&
+                expr->binary.rhs->kind == EXPR_INTEGER &&
+                expr->binary.rhs->integer_value == 0) {
+                fprintf(stderr, "semantic error: division by zero\n");
+                return false;
+            }
             return check_expr(expr->binary.lhs, symbols, functions) && check_expr(expr->binary.rhs, symbols, functions);
         case EXPR_CALL: {
             const FunctionSignature *signature =
@@ -331,6 +337,10 @@ bool semantic_check_program(const Program *program) {
             .param_count = function->param_count
         };
         if (same_name(function->name, function->name_length, "main", 4)) {
+            if (function->param_count != 0 || function->return_type != TYPE_I32) {
+                fprintf(stderr, "semantic error: expected fn main() -> i32\n");
+                return false;
+            }
             has_main = true;
         }
     }

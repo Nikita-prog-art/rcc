@@ -150,6 +150,8 @@ typedef struct Program {
 
 Program *program_create(void);
 void program_destroy(Program *program);
+void stmt_destroy(Stmt *stmt);
+void expr_destroy(Expr *expr);
 Function *function_create(const char *name, size_t name_length, TypeKind return_type);
 void function_append_param(Function *function, const char *name, size_t length, TypeKind type);
 void function_append_statement(Function *function, Stmt *statement);

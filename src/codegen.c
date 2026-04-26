@@ -52,9 +52,9 @@ static LLVMTypeRef llvm_type(TypeKind type, LLVMContextRef llvm_context) {
 }
 
 static LLVMValueRef lookup_local(const CodegenContext *context, const char *name, size_t length) {
-    for (size_t i = 0; i < context->local_count; i++) {
-        if (same_name(name, length, context->locals[i].name, context->locals[i].length)) {
-            return context->locals[i].storage;
+    for (size_t i = context->local_count; i > 0; i--) {
+        if (same_name(name, length, context->locals[i - 1].name, context->locals[i - 1].length)) {
+            return context->locals[i - 1].storage;
         }
     }
     return NULL;
@@ -314,7 +314,7 @@ static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMVal
                              llvm_function)) {
         return false;
     }
-    bool then_falls_through = !block_has_terminator(then_block);
+    bool then_falls_through = !block_has_terminator(LLVMGetInsertBlock(context->builder));
     if (then_falls_through) {
         LLVMBuildBr(context->builder, merge_block);
     }

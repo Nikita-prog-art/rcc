@@ -9,6 +9,9 @@ typedef struct Lexer {
     size_t offset;
     size_t line;
     size_t column;
+    bool has_error;
+    size_t error_line;
+    size_t error_column;
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);

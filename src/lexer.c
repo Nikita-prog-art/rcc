@@ -1,6 +1,7 @@
 #include "lexer.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -72,7 +73,10 @@ static void skip_whitespace(Lexer *lexer) {
             }
             if (!closed) {
                 fprintf(stderr, "lexer error at %zu:%zu: unterminated block comment\n", lexer->line, lexer->column);
-                break;
+                lexer->has_error = true;
+                lexer->error_line = lexer->line;
+                lexer->error_column = lexer->column;
+                return;
             }
             continue;
         }
@@ -123,10 +127,20 @@ void lexer_init(Lexer *lexer, const char *source) {
     lexer->offset = 0;
     lexer->line = 1;
     lexer->column = 1;
+    lexer->has_error = false;
+    lexer->error_line = 1;
+    lexer->error_column = 1;
 }
 
 Token lexer_next(Lexer *lexer) {
     skip_whitespace(lexer);
+
+    if (lexer->has_error) {
+        Token token = make_token(lexer, TOKEN_ERROR, lexer->source + lexer->offset, 0);
+        token.line = lexer->error_line;
+        token.column = lexer->error_column;
+        return token;
+    }
 
     const char *start = lexer->source + lexer->offset;
     size_t line = lexer->line;
@@ -154,7 +168,15 @@ Token lexer_next(Lexer *lexer) {
     if (isdigit((unsigned char) ch)) {
         long value = ch - '0';
         while (isdigit((unsigned char) lexer_peek(lexer))) {
-            value = value * 10 + (lexer_advance(lexer) - '0');
+            int digit = lexer_advance(lexer) - '0';
+            if (value > (LONG_MAX - digit) / 10) {
+                fprintf(stderr, "lexer error at %zu:%zu: integer literal overflow\n", line, column);
+                Token error = make_token(lexer, TOKEN_ERROR, start, (size_t) ((lexer->source + lexer->offset) - start));
+                error.line = line;
+                error.column = column;
+                return error;
+            }
+            value = value * 10 + digit;
         }
         size_t length = (size_t) ((lexer->source + lexer->offset) - start);
         Token token = make_token(lexer, TOKEN_INTEGER, start, length);
