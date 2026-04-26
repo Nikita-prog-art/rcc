@@ -29,6 +29,12 @@ typedef struct CodegenContext {
     unsigned temp_counter;
 } CodegenContext;
 
+enum {
+    MAX_FUNCTIONS = 256,
+    MAX_LOCALS = 256,
+    MAX_LOOP_DEPTH = 256
+};
+
 static bool same_name(const char *lhs, size_t lhs_len, const char *rhs, size_t rhs_len) {
     return lhs_len == rhs_len && strncmp(lhs, rhs, lhs_len) == 0;
 }
@@ -75,7 +81,7 @@ static LLVMValueRef create_entry_alloca(CodegenContext *context, LLVMValueRef ll
 }
 
 static bool define_local(CodegenContext *context, const char *name, size_t length, LLVMValueRef storage) {
-    if (context->local_count >= 256) {
+    if (context->local_count >= MAX_LOCALS) {
         fprintf(stderr, "codegen error: too many locals\n");
         return false;
     }
@@ -227,6 +233,10 @@ static LLVMValueRef emit_expr(CodegenContext *context, const Expr *expr) {
 
 static LLVMValueRef declare_function(CodegenContext *context, const Function *function, LLVMTypeRef *out_type) {
     LLVMTypeRef param_types[256];
+    if (function->param_count > 256) {
+        fprintf(stderr, "codegen error: too many function parameters\n");
+        return NULL;
+    }
     for (size_t i = 0; i < function->param_count; i++) {
         param_types[i] = llvm_type(function->params[i].type, context->llvm_context);
     }
@@ -247,6 +257,17 @@ static LLVMValueRef declare_function(CodegenContext *context, const Function *fu
 
 static bool block_has_terminator(LLVMBasicBlockRef block) {
     return LLVMGetBasicBlockTerminator(block) != NULL;
+}
+
+static bool push_loop(CodegenContext *context, LLVMBasicBlockRef continue_block, LLVMBasicBlockRef break_block) {
+    if (context->loop_depth >= MAX_LOOP_DEPTH) {
+        fprintf(stderr, "codegen error: loop nesting limit exceeded\n");
+        return false;
+    }
+    context->loop_continue_blocks[context->loop_depth] = continue_block;
+    context->loop_break_blocks[context->loop_depth] = break_block;
+    context->loop_depth++;
+    return true;
 }
 
 static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function);
@@ -328,7 +349,7 @@ static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMVal
                              llvm_function)) {
         return false;
     }
-    bool else_falls_through = !block_has_terminator(else_block);
+    bool else_falls_through = !block_has_terminator(LLVMGetInsertBlock(context->builder));
     if (else_falls_through) {
         LLVMBuildBr(context->builder, merge_block);
     }
@@ -377,9 +398,9 @@ static bool emit_while_statement(CodegenContext *context, const Stmt *stmt, LLVM
     LLVMPositionBuilderAtEnd(context->builder, body_block);
     context->local_count = saved_local_count;
     memcpy(context->locals, saved_locals, sizeof(saved_locals));
-    context->loop_continue_blocks[context->loop_depth] = cond_block;
-    context->loop_break_blocks[context->loop_depth] = exit_block;
-    context->loop_depth++;
+    if (!push_loop(context, cond_block, exit_block)) {
+        return false;
+    }
     if (!emit_statement_list(context,
                              (const Stmt *const *) stmt->while_stmt.body_statements,
                              stmt->while_stmt.body_count,
@@ -417,9 +438,9 @@ static bool emit_loop_statement(CodegenContext *context, const Stmt *stmt, LLVMV
     LLVMPositionBuilderAtEnd(context->builder, body_block);
     context->local_count = saved_local_count;
     memcpy(context->locals, saved_locals, sizeof(saved_locals));
-    context->loop_continue_blocks[context->loop_depth] = body_block;
-    context->loop_break_blocks[context->loop_depth] = exit_block;
-    context->loop_depth++;
+    if (!push_loop(context, body_block, exit_block)) {
+        return false;
+    }
     if (!emit_statement_list(context,
                              (const Stmt *const *) stmt->loop_stmt.body_statements,
                              stmt->loop_stmt.body_count,
@@ -461,6 +482,10 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
         }
         LLVMBuildStore(context->builder, value, storage);
         return true;
+    }
+
+    if (stmt->kind == STMT_EXPR) {
+        return emit_expr(context, stmt->expr_stmt.value) != NULL;
     }
 
     if (stmt->kind == STMT_RETURN) {
@@ -561,6 +586,10 @@ bool codegen_emit_ir(const Program *program, const char *output_path) {
     for (size_t i = 0; i < program->function_count; i++) {
         LLVMTypeRef function_type = NULL;
         LLVMValueRef llvm_function = declare_function(&context, program->functions[i], &function_type);
+        if (context.function_count >= MAX_FUNCTIONS) {
+            fprintf(stderr, "codegen error: too many functions\n");
+            goto cleanup;
+        }
         if (llvm_function == NULL) {
             goto cleanup;
         }

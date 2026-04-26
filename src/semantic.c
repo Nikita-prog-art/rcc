@@ -168,6 +168,14 @@ static bool check_statement(const Stmt *stmt,
         return true;
     }
 
+    if (stmt->kind == STMT_EXPR) {
+        if (!check_expr(stmt->expr_stmt.value, symbols, functions)) {
+            return false;
+        }
+        *always_returns = false;
+        return true;
+    }
+
     if (stmt->kind == STMT_RETURN) {
         if (!check_expr(stmt->return_stmt.value, symbols, functions)) {
             return false;
@@ -278,6 +286,7 @@ static bool check_statements(const Stmt *const *statements,
     SymbolTable symbols = *input_symbols;
     size_t scope_start = input_symbols->count;
     *always_returns = false;
+    bool saw_terminator = false;
 
     for (size_t i = 0; i < statement_count; i++) {
         bool stmt_returns = false;
@@ -285,16 +294,22 @@ static bool check_statements(const Stmt *const *statements,
             return false;
         }
         if (stmt_returns) {
-            *always_returns = true;
-            return true;
+            saw_terminator = true;
         }
     }
+    *always_returns = saw_terminator;
     return true;
 }
 
 static bool check_function(const Function *function, const FunctionTable *functions) {
     SymbolTable symbols = {0};
     bool always_returns = false;
+
+    if (function->param_count > 256) {
+        fprintf(stderr, "semantic error: too many parameters in function '%.*s'\n",
+                (int) function->name_length, function->name);
+        return false;
+    }
 
     for (size_t i = 0; i < function->param_count; i++) {
         const Param *param = &function->params[i];
@@ -329,6 +344,10 @@ bool semantic_check_program(const Program *program) {
         if (lookup_function(&functions, function->name, function->name_length) != NULL) {
             fprintf(stderr, "semantic error: duplicate function '%.*s'\n",
                     (int) function->name_length, function->name);
+            return false;
+        }
+        if (functions.count >= 256) {
+            fprintf(stderr, "semantic error: too many functions\n");
             return false;
         }
         functions.items[functions.count++] = (FunctionSignature) {

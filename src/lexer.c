@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -169,7 +170,7 @@ Token lexer_next(Lexer *lexer) {
         long value = ch - '0';
         while (isdigit((unsigned char) lexer_peek(lexer))) {
             int digit = lexer_advance(lexer) - '0';
-            if (value > (LONG_MAX - digit) / 10) {
+            if (value > (INT32_MAX - digit) / 10) {
                 fprintf(stderr, "lexer error at %zu:%zu: integer literal overflow\n", line, column);
                 Token error = make_token(lexer, TOKEN_ERROR, start, (size_t) ((lexer->source + lexer->offset) - start));
                 error.line = line;

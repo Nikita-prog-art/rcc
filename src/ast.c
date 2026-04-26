@@ -45,6 +45,9 @@ static void destroy_stmt_impl(Stmt *stmt) {
         case STMT_LET:
             destroy_expr_impl(stmt->let_stmt.value);
             break;
+        case STMT_EXPR:
+            destroy_expr_impl(stmt->expr_stmt.value);
+            break;
         case STMT_ASSIGN:
             destroy_expr_impl(stmt->assign_stmt.value);
             break;
@@ -216,6 +219,13 @@ Stmt *stmt_create_assign(const char *name, size_t length, Expr *value) {
     stmt->assign_stmt.name = name;
     stmt->assign_stmt.length = length;
     stmt->assign_stmt.value = value;
+    return stmt;
+}
+
+Stmt *stmt_create_expr(Expr *value) {
+    Stmt *stmt = xcalloc(1, sizeof(Stmt));
+    stmt->kind = STMT_EXPR;
+    stmt->expr_stmt.value = value;
     return stmt;
 }
 

@@ -73,6 +73,7 @@ struct Expr {
 
 typedef enum StmtKind {
     STMT_LET = 0,
+    STMT_EXPR,
     STMT_RETURN,
     STMT_IF,
     STMT_ASSIGN,
@@ -99,6 +100,9 @@ struct Stmt {
             size_t length;
             Expr *value;
         } assign_stmt;
+        struct {
+            Expr *value;
+        } expr_stmt;
         struct {
             Expr *value;
         } return_stmt;
@@ -163,6 +167,7 @@ Expr *expr_create_call(const char *callee, size_t callee_length);
 void expr_append_call_arg(Expr *expr, Expr *arg);
 Stmt *stmt_create_let(const char *name, size_t length, TypeKind type, bool is_mutable, Expr *value);
 Stmt *stmt_create_assign(const char *name, size_t length, Expr *value);
+Stmt *stmt_create_expr(Expr *value);
 Stmt *stmt_create_return(Expr *value);
 Stmt *stmt_create_if(Expr *condition);
 Stmt *stmt_create_while(Expr *condition);

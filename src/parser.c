@@ -401,6 +401,7 @@ static Stmt *parse_statement(Parser *parser) {
         }
         Stmt *while_stmt = stmt_create_while(condition);
         if (!parse_block(parser, while_stmt, BLOCK_WHILE_BODY)) {
+            stmt_destroy(while_stmt);
             return NULL;
         }
         return while_stmt;
@@ -432,13 +433,8 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         if (parser->current.kind == TOKEN_SEMICOLON) {
-            fprintf(stderr,
-                    "parse error at %zu:%zu: expression statements must currently be final in a block\n",
-                    parser->current.line,
-                    parser->current.column);
-            parser->has_error = true;
-            expr_destroy(value);
-            return NULL;
+            parser_advance(parser);
+            return stmt_create_expr(value);
         }
         if (parser->current.kind == TOKEN_RBRACE) {
             return stmt_create_return(value);
