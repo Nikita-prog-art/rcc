@@ -1,7 +1,12 @@
 #include "parser.h"
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
+
+static long max_i32_magnitude(void) {
+    return (long) INT32_MAX + 1;
+}
 
 static void parser_advance(Parser *parser) {
     parser->current = parser->next;
@@ -43,7 +48,7 @@ static bool parse_type(Parser *parser, TypeKind *out_type) {
 static Expr *parse_expr(Parser *parser);
 static Expr *parse_call(Parser *parser, Token callee);
 static Expr *parse_primary(Parser *parser);
-static Stmt *parse_statement(Parser *parser);
+static Stmt *parse_statement(Parser *parser, bool allow_implicit_return);
 static Stmt *parse_if_statement(Parser *parser);
 
 static bool token_starts_expr(TokenKind kind) {
@@ -68,7 +73,7 @@ static bool parse_block(Parser *parser, Stmt *owner, BlockKind block_kind) {
         return false;
     }
     while (!parser->has_error && parser->current.kind != TOKEN_RBRACE && parser->current.kind != TOKEN_EOF) {
-        Stmt *statement = parse_statement(parser);
+        Stmt *statement = parse_statement(parser, false);
         if (statement == NULL) {
             return false;
         }
@@ -107,6 +112,19 @@ static Expr *parse_unary(Parser *parser) {
 
     if (parser->current.kind == TOKEN_MINUS) {
         parser_advance(parser);
+        if (parser->current.kind == TOKEN_INTEGER) {
+            Token token = parser->current;
+            if (token.integer_value > max_i32_magnitude()) {
+                fprintf(stderr,
+                        "parse error at %zu:%zu: integer literal overflow\n",
+                        token.line,
+                        token.column);
+                parser->has_error = true;
+                return NULL;
+            }
+            parser_advance(parser);
+            return expr_create_integer(-token.integer_value);
+        }
         Expr *operand = parse_unary(parser);
         if (operand == NULL) {
             return NULL;
@@ -129,6 +147,14 @@ static Expr *parse_unary(Parser *parser) {
 static Expr *parse_primary(Parser *parser) {
     Token token = parser->current;
     if (token.kind == TOKEN_INTEGER) {
+        if (token.integer_value > INT32_MAX) {
+            fprintf(stderr,
+                    "parse error at %zu:%zu: integer literal overflow\n",
+                    token.line,
+                    token.column);
+            parser->has_error = true;
+            return NULL;
+        }
         parser_advance(parser);
         return expr_create_integer(token.integer_value);
     }
@@ -143,6 +169,7 @@ static Expr *parse_primary(Parser *parser) {
         parser_advance(parser);
         Expr *expr = parse_expr(parser);
         if (!parser_expect(parser, TOKEN_RPAREN, "')'")) {
+            expr_destroy(expr);
             return NULL;
         }
         return expr;
@@ -196,6 +223,7 @@ static Expr *parse_multiplicative(Parser *parser) {
         parser_advance(parser);
         Expr *rhs = parse_unary(parser);
         if (rhs == NULL) {
+            expr_destroy(expr);
             return NULL;
         }
         BinaryOp binary_op = BINARY_MUL;
@@ -225,6 +253,7 @@ static Expr *parse_additive(Parser *parser) {
         parser_advance(parser);
         Expr *rhs = parse_multiplicative(parser);
         if (rhs == NULL) {
+            expr_destroy(expr);
             return NULL;
         }
         expr = expr_create_binary(op == TOKEN_PLUS ? BINARY_ADD : BINARY_SUB, expr, rhs);
@@ -243,6 +272,7 @@ static Expr *parse_comparison(Parser *parser) {
         parser_advance(parser);
         Expr *rhs = parse_additive(parser);
         if (rhs == NULL) {
+            expr_destroy(expr);
             return NULL;
         }
         BinaryOp binary_op = BINARY_LT;
@@ -275,6 +305,7 @@ static Expr *parse_equality(Parser *parser) {
         parser_advance(parser);
         Expr *rhs = parse_comparison(parser);
         if (rhs == NULL) {
+            expr_destroy(expr);
             return NULL;
         }
         expr = expr_create_binary(op == TOKEN_EQUAL_EQUAL ? BINARY_EQ : BINARY_NE, expr, rhs);
@@ -307,7 +338,7 @@ static Stmt *parse_if_statement(Parser *parser) {
     return if_stmt;
 }
 
-static Stmt *parse_statement(Parser *parser) {
+static Stmt *parse_statement(Parser *parser, bool allow_implicit_return) {
     if (parser->current.kind == TOKEN_SEMICOLON) {
         parser_advance(parser);
         return stmt_create_empty();
@@ -436,12 +467,12 @@ static Stmt *parse_statement(Parser *parser) {
             parser_advance(parser);
             return stmt_create_expr(value);
         }
-        if (parser->current.kind == TOKEN_RBRACE) {
+        if (parser->current.kind == TOKEN_RBRACE && allow_implicit_return) {
             return stmt_create_return(value);
         }
         if (starts_with_identifier) {
             fprintf(stderr,
-                    "parse error at %zu:%zu: expected '=' for assignment or block end for implicit return\n",
+                    "parse error at %zu:%zu: expected '=' or ';' after expression statement\n",
                     parser->current.line,
                     parser->current.column);
             parser->has_error = true;
@@ -449,7 +480,7 @@ static Stmt *parse_statement(Parser *parser) {
             return NULL;
         }
         fprintf(stderr,
-                "parse error at %zu:%zu: expected ';' or block end after expression\n",
+                "parse error at %zu:%zu: expected ';' after expression\n",
                 parser->current.line,
                 parser->current.column);
         parser->has_error = true;
@@ -518,7 +549,7 @@ static Function *parse_function(Parser *parser) {
     }
 
     while (!parser->has_error && parser->current.kind != TOKEN_RBRACE && parser->current.kind != TOKEN_EOF) {
-        Stmt *statement = parse_statement(parser);
+        Stmt *statement = parse_statement(parser, true);
         if (statement == NULL) {
             return function;
         }

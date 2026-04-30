@@ -167,10 +167,11 @@ Token lexer_next(Lexer *lexer) {
     }
 
     if (isdigit((unsigned char) ch)) {
+        long max_i32_magnitude = (long) INT32_MAX + 1;
         long value = ch - '0';
         while (isdigit((unsigned char) lexer_peek(lexer))) {
             int digit = lexer_advance(lexer) - '0';
-            if (value > (INT32_MAX - digit) / 10) {
+            if (value > (max_i32_magnitude - digit) / 10) {
                 fprintf(stderr, "lexer error at %zu:%zu: integer literal overflow\n", line, column);
                 Token error = make_token(lexer, TOKEN_ERROR, start, (size_t) ((lexer->source + lexer->offset) - start));
                 error.line = line;

@@ -1,10 +1,10 @@
 fn classify(value: i32) -> i32 {
     if value < 0 {
-        0
+        return 0;
     } else if value == 0 {
-        1
+        return 1;
     } else {
-        value + 10
+        return value + 10;
     }
 }
 
