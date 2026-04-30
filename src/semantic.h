@@ -2,7 +2,22 @@
 #define RCC_SEMANTIC_H
 
 #include "ast.h"
+#include "diagnostic.h"
 
-bool semantic_check_program(const Program *program);
+typedef struct CheckedFunction {
+    const Function *function;
+    size_t param_count;
+    TypeKind return_type;
+} CheckedFunction;
+
+typedef struct CheckedProgram {
+    Program *program;
+    CheckedFunction *functions;
+    size_t function_count;
+    size_t function_capacity;
+} CheckedProgram;
+
+bool semantic_check_program(Program *program, DiagnosticSink *diagnostics, CheckedProgram *out_checked);
+void checked_program_destroy(CheckedProgram *checked);
 
 #endif

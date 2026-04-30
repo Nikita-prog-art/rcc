@@ -1,6 +1,6 @@
 #include "semantic.h"
 
-#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct Symbol {
@@ -8,90 +8,43 @@ typedef struct Symbol {
     size_t length;
     TypeKind type;
     bool is_mutable;
+    size_t symbol_id;
 } Symbol;
 
 typedef struct SymbolTable {
-    Symbol items[256];
+    Symbol *items;
     size_t count;
+    size_t capacity;
+    size_t next_symbol_id;
 } SymbolTable;
-
-typedef struct FunctionSignature {
-    const char *name;
-    size_t length;
-    size_t param_count;
-} FunctionSignature;
-
-typedef struct FunctionTable {
-    FunctionSignature items[256];
-    size_t count;
-} FunctionTable;
 
 static bool same_name(const char *lhs, size_t lhs_len, const char *rhs, size_t rhs_len) {
     return lhs_len == rhs_len && strncmp(lhs, rhs, lhs_len) == 0;
 }
 
-static const FunctionSignature *lookup_function(const FunctionTable *functions, const char *name, size_t length) {
-    for (size_t i = 0; i < functions->count; i++) {
-        if (same_name(name, length, functions->items[i].name, functions->items[i].length)) {
-            return &functions->items[i];
+static void *xrealloc(void *ptr, size_t size) {
+    void *next = realloc(ptr, size);
+    if (next == NULL) {
+        abort();
+    }
+    return next;
+}
+
+static const CheckedFunction *lookup_function(const CheckedProgram *checked,
+                                              const char *name,
+                                              size_t length,
+                                              size_t *out_id) {
+    for (size_t i = 0; i < checked->function_count; i++) {
+        const Function *function = checked->functions[i].function;
+        if (same_name(name, length, function->name, function->name_length)) {
+            if (out_id != NULL) {
+                *out_id = i;
+            }
+            return &checked->functions[i];
         }
     }
     return NULL;
 }
-
-static bool check_expr(const Expr *expr, const SymbolTable *symbols, const FunctionTable *functions) {
-    switch (expr->kind) {
-        case EXPR_INTEGER:
-            return true;
-        case EXPR_NAME:
-            for (size_t i = 0; i < symbols->count; i++) {
-                if (same_name(expr->name.name, expr->name.length, symbols->items[i].name, symbols->items[i].length)) {
-                    return true;
-                }
-            }
-            fprintf(stderr, "semantic error: use of undefined variable '%.*s'\n", (int) expr->name.length, expr->name.name);
-            return false;
-        case EXPR_UNARY:
-            return check_expr(expr->unary.operand, symbols, functions);
-        case EXPR_BINARY:
-            if ((expr->binary.op == BINARY_DIV || expr->binary.op == BINARY_REM) &&
-                expr->binary.rhs->kind == EXPR_INTEGER &&
-                expr->binary.rhs->integer_value == 0) {
-                fprintf(stderr, "semantic error: division by zero\n");
-                return false;
-            }
-            return check_expr(expr->binary.lhs, symbols, functions) && check_expr(expr->binary.rhs, symbols, functions);
-        case EXPR_CALL: {
-            const FunctionSignature *signature =
-                lookup_function(functions, expr->call.callee, expr->call.callee_length);
-            if (signature == NULL) {
-                fprintf(stderr, "semantic error: call to undefined function '%.*s'\n",
-                        (int) expr->call.callee_length, expr->call.callee);
-                return false;
-            }
-            if (signature->param_count != expr->call.arg_count) {
-                fprintf(stderr, "semantic error: function '%.*s' expects %zu args, got %zu\n",
-                        (int) expr->call.callee_length, expr->call.callee,
-                        signature->param_count, expr->call.arg_count);
-                return false;
-            }
-            for (size_t i = 0; i < expr->call.arg_count; i++) {
-                if (!check_expr(expr->call.args[i], symbols, functions)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool check_statements(const Stmt *const *statements,
-                             size_t statement_count,
-                             const SymbolTable *input_symbols,
-                             const FunctionTable *functions,
-                             size_t loop_depth,
-                             bool *always_returns);
 
 static const Symbol *lookup_symbol(const SymbolTable *symbols, const char *name, size_t length) {
     for (size_t i = symbols->count; i > 0; i--) {
@@ -107,34 +60,156 @@ static bool symbol_table_insert(SymbolTable *symbols,
                                 const char *name,
                                 size_t length,
                                 TypeKind type,
-                                bool is_mutable) {
+                                bool is_mutable,
+                                SourceSpan span,
+                                DiagnosticSink *diagnostics,
+                                size_t *out_symbol_id) {
     for (size_t i = scope_start; i < symbols->count; i++) {
         if (same_name(name, length, symbols->items[i].name, symbols->items[i].length)) {
-            fprintf(stderr, "semantic error: duplicate variable '%.*s'\n", (int) length, name);
+            diagnostic_error(diagnostics, span, "semantic", "duplicate variable '%.*s'", (int) length, name);
             return false;
         }
     }
-    if (symbols->count >= 256) {
-        fprintf(stderr, "semantic error: too many local variables\n");
-        return false;
+    if (symbols->count >= symbols->capacity) {
+        size_t next_capacity = symbols->capacity == 0 ? 32 : symbols->capacity * 2;
+        symbols->items = xrealloc(symbols->items, next_capacity * sizeof(Symbol));
+        symbols->capacity = next_capacity;
     }
+
+    size_t symbol_id = symbols->next_symbol_id++;
     symbols->items[symbols->count++] = (Symbol) {
         .name = name,
         .length = length,
         .type = type,
-        .is_mutable = is_mutable
+        .is_mutable = is_mutable,
+        .symbol_id = symbol_id
+    };
+    if (out_symbol_id != NULL) {
+        *out_symbol_id = symbol_id;
+    }
+    return true;
+}
+
+static bool checked_program_append(CheckedProgram *checked, Function *function) {
+    if (checked->function_count >= checked->function_capacity) {
+        size_t next_capacity = checked->function_capacity == 0 ? 16 : checked->function_capacity * 2;
+        checked->functions = xrealloc(checked->functions, next_capacity * sizeof(CheckedFunction));
+        checked->function_capacity = next_capacity;
+    }
+    function->function_id = checked->function_count;
+    checked->functions[checked->function_count++] = (CheckedFunction) {
+        .function = function,
+        .param_count = function->param_count,
+        .return_type = function->return_type
     };
     return true;
 }
 
-static bool check_statement(const Stmt *stmt,
+static bool check_expr(Expr *expr,
+                       SymbolTable *symbols,
+                       const CheckedProgram *checked,
+                       DiagnosticSink *diagnostics) {
+    expr->type = TYPE_I32;
+    expr->has_type = true;
+
+    switch (expr->kind) {
+        case EXPR_INTEGER:
+            return true;
+        case EXPR_NAME: {
+            const Symbol *symbol = lookup_symbol(symbols, expr->name.name, expr->name.length);
+            if (symbol == NULL) {
+                diagnostic_error(diagnostics,
+                                 expr->span,
+                                 "semantic",
+                                 "use of undefined variable '%.*s'",
+                                 (int) expr->name.length,
+                                 expr->name.name);
+                return false;
+            }
+            expr->name.symbol_id = symbol->symbol_id;
+            expr->type = symbol->type;
+            return true;
+        }
+        case EXPR_UNARY:
+            return check_expr(expr->unary.operand, symbols, checked, diagnostics);
+        case EXPR_BINARY:
+            if (!check_expr(expr->binary.lhs, symbols, checked, diagnostics) ||
+                !check_expr(expr->binary.rhs, symbols, checked, diagnostics)) {
+                return false;
+            }
+            if ((expr->binary.op == BINARY_DIV || expr->binary.op == BINARY_REM) &&
+                expr->binary.rhs->kind == EXPR_INTEGER &&
+                expr->binary.rhs->integer_value == 0) {
+                diagnostic_error(diagnostics, expr->binary.rhs->span, "semantic", "division by zero");
+                return false;
+            }
+            return true;
+        case EXPR_CALL: {
+            size_t function_id = 0;
+            const CheckedFunction *signature =
+                lookup_function(checked, expr->call.callee, expr->call.callee_length, &function_id);
+            if (signature == NULL) {
+                diagnostic_error(diagnostics,
+                                 expr->span,
+                                 "semantic",
+                                 "call to undefined function '%.*s'",
+                                 (int) expr->call.callee_length,
+                                 expr->call.callee);
+                return false;
+            }
+            expr->call.function_id = function_id;
+            if (signature->param_count != expr->call.arg_count) {
+                diagnostic_error(diagnostics,
+                                 expr->span,
+                                 "semantic",
+                                 "function '%.*s' expects %zu args, got %zu",
+                                 (int) expr->call.callee_length,
+                                 expr->call.callee,
+                                 signature->param_count,
+                                 expr->call.arg_count);
+                return false;
+            }
+            for (size_t i = 0; i < expr->call.arg_count; i++) {
+                if (!check_expr(expr->call.args[i], symbols, checked, diagnostics)) {
+                    return false;
+                }
+            }
+            expr->type = signature->return_type;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool check_statements(const Block *block,
+                             SymbolTable *symbols,
+                             size_t scope_start,
+                             const CheckedProgram *checked,
+                             size_t loop_depth,
+                             DiagnosticSink *diagnostics,
+                             FlowFlags *out_flow);
+
+static bool check_scoped_block(const Block *block,
+                               SymbolTable *symbols,
+                               const CheckedProgram *checked,
+                               size_t loop_depth,
+                               DiagnosticSink *diagnostics,
+                               FlowFlags *out_flow) {
+    size_t saved_count = symbols->count;
+    bool ok = check_statements(block, symbols, saved_count, checked, loop_depth, diagnostics, out_flow);
+    symbols->count = saved_count;
+    return ok;
+}
+
+static bool check_statement(Stmt *stmt,
                             SymbolTable *symbols,
                             size_t scope_start,
-                            const FunctionTable *functions,
+                            const CheckedProgram *checked,
                             size_t loop_depth,
-                            bool *always_returns) {
+                            DiagnosticSink *diagnostics,
+                            FlowFlags *out_flow) {
     if (stmt->kind == STMT_LET) {
-        if (!check_expr(stmt->let_stmt.value, symbols, functions)) {
+        if (!check_expr(stmt->let_stmt.value, symbols, checked, diagnostics)) {
             return false;
         }
         if (!symbol_table_insert(symbols,
@@ -142,222 +217,232 @@ static bool check_statement(const Stmt *stmt,
                                  stmt->let_stmt.name,
                                  stmt->let_stmt.length,
                                  stmt->let_stmt.type,
-                                 stmt->let_stmt.is_mutable)) {
+                                 stmt->let_stmt.is_mutable,
+                                 stmt->span,
+                                 diagnostics,
+                                 &stmt->let_stmt.symbol_id)) {
             return false;
         }
-        *always_returns = false;
+        *out_flow = FLOW_FALLTHROUGH;
         return true;
     }
 
     if (stmt->kind == STMT_ASSIGN) {
         const Symbol *symbol = lookup_symbol(symbols, stmt->assign_stmt.name, stmt->assign_stmt.length);
         if (symbol == NULL) {
-            fprintf(stderr, "semantic error: assignment to undefined variable '%.*s'\n",
-                    (int) stmt->assign_stmt.length, stmt->assign_stmt.name);
+            diagnostic_error(diagnostics,
+                             stmt->span,
+                             "semantic",
+                             "assignment to undefined variable '%.*s'",
+                             (int) stmt->assign_stmt.length,
+                             stmt->assign_stmt.name);
             return false;
         }
         if (!symbol->is_mutable) {
-            fprintf(stderr, "semantic error: variable '%.*s' is not mutable\n",
-                    (int) stmt->assign_stmt.length, stmt->assign_stmt.name);
+            diagnostic_error(diagnostics,
+                             stmt->span,
+                             "semantic",
+                             "variable '%.*s' is not mutable",
+                             (int) stmt->assign_stmt.length,
+                             stmt->assign_stmt.name);
             return false;
         }
-        if (!check_expr(stmt->assign_stmt.value, symbols, functions)) {
+        stmt->assign_stmt.symbol_id = symbol->symbol_id;
+        if (!check_expr(stmt->assign_stmt.value, symbols, checked, diagnostics)) {
             return false;
         }
-        *always_returns = false;
+        *out_flow = FLOW_FALLTHROUGH;
         return true;
     }
 
     if (stmt->kind == STMT_EXPR) {
-        if (!check_expr(stmt->expr_stmt.value, symbols, functions)) {
+        if (!check_expr(stmt->expr_stmt.value, symbols, checked, diagnostics)) {
             return false;
         }
-        *always_returns = false;
+        *out_flow = FLOW_FALLTHROUGH;
         return true;
     }
 
     if (stmt->kind == STMT_RETURN) {
-        if (!check_expr(stmt->return_stmt.value, symbols, functions)) {
+        if (!check_expr(stmt->return_stmt.value, symbols, checked, diagnostics)) {
             return false;
         }
-        *always_returns = true;
+        *out_flow = FLOW_RETURN;
         return true;
     }
 
     if (stmt->kind == STMT_IF) {
-        bool then_returns = false;
-        bool else_returns = false;
-        SymbolTable then_symbols = *symbols;
-        SymbolTable else_symbols = *symbols;
+        FlowFlags then_flow = FLOW_NONE;
+        FlowFlags else_flow = FLOW_FALLTHROUGH;
 
-        if (!check_expr(stmt->if_stmt.condition, symbols, functions)) {
+        if (!check_expr(stmt->if_stmt.condition, symbols, checked, diagnostics)) {
             return false;
         }
-        if (!check_statements((const Stmt *const *) stmt->if_stmt.then_statements,
-                              stmt->if_stmt.then_count,
-                              &then_symbols,
-                              functions,
-                              loop_depth,
-                              &then_returns)) {
+        if (!check_scoped_block(&stmt->if_stmt.then_block, symbols, checked, loop_depth, diagnostics, &then_flow)) {
             return false;
         }
-        if (!check_statements((const Stmt *const *) stmt->if_stmt.else_statements,
-                              stmt->if_stmt.else_count,
-                              &else_symbols,
-                              functions,
-                              loop_depth,
-                              &else_returns)) {
+        if (stmt->if_stmt.has_else &&
+            !check_scoped_block(&stmt->if_stmt.else_block, symbols, checked, loop_depth, diagnostics, &else_flow)) {
             return false;
         }
-        *always_returns = then_returns && else_returns;
+        *out_flow = then_flow | else_flow;
         return true;
     }
 
     if (stmt->kind == STMT_WHILE) {
-        bool body_returns = false;
-        SymbolTable body_symbols = *symbols;
-        if (!check_expr(stmt->while_stmt.condition, symbols, functions)) {
+        FlowFlags body_flow = FLOW_NONE;
+        if (!check_expr(stmt->while_stmt.condition, symbols, checked, diagnostics)) {
             return false;
         }
-        if (!check_statements((const Stmt *const *) stmt->while_stmt.body_statements,
-                              stmt->while_stmt.body_count,
-                              &body_symbols,
-                              functions,
-                              loop_depth + 1,
-                              &body_returns)) {
+        if (!check_scoped_block(&stmt->while_stmt.body, symbols, checked, loop_depth + 1, diagnostics, &body_flow)) {
             return false;
         }
-        *always_returns = false;
+        *out_flow = FLOW_FALLTHROUGH | (body_flow & FLOW_RETURN);
         return true;
     }
 
     if (stmt->kind == STMT_LOOP) {
-        bool body_returns = false;
-        SymbolTable body_symbols = *symbols;
-        if (!check_statements((const Stmt *const *) stmt->loop_stmt.body_statements,
-                              stmt->loop_stmt.body_count,
-                              &body_symbols,
-                              functions,
-                              loop_depth + 1,
-                              &body_returns)) {
+        FlowFlags body_flow = FLOW_NONE;
+        FlowFlags loop_flow = FLOW_NONE;
+        if (!check_scoped_block(&stmt->loop_stmt.body, symbols, checked, loop_depth + 1, diagnostics, &body_flow)) {
             return false;
         }
-        *always_returns = false;
+        if ((body_flow & FLOW_RETURN) != 0) {
+            loop_flow |= FLOW_RETURN;
+        }
+        if ((body_flow & FLOW_BREAK) != 0) {
+            loop_flow |= FLOW_FALLTHROUGH;
+        }
+        if ((body_flow & (FLOW_FALLTHROUGH | FLOW_CONTINUE | FLOW_DIVERGE)) != 0) {
+            loop_flow |= FLOW_DIVERGE;
+        }
+        *out_flow = loop_flow == FLOW_NONE ? FLOW_DIVERGE : loop_flow;
         return true;
     }
 
     if (stmt->kind == STMT_BLOCK) {
-        SymbolTable block_symbols = *symbols;
-        if (!check_statements((const Stmt *const *) stmt->block_stmt.statements,
-                              stmt->block_stmt.statement_count,
-                              &block_symbols,
-                              functions,
-                              loop_depth,
-                              always_returns)) {
-            return false;
-        }
-        return true;
+        return check_scoped_block(&stmt->block_stmt.body, symbols, checked, loop_depth, diagnostics, out_flow);
     }
 
     if (stmt->kind == STMT_EMPTY) {
-        *always_returns = false;
+        *out_flow = FLOW_FALLTHROUGH;
         return true;
     }
 
     if (stmt->kind == STMT_BREAK || stmt->kind == STMT_CONTINUE) {
         if (loop_depth == 0) {
-            fprintf(stderr, "semantic error: '%s' used outside of loop\n",
-                    stmt->kind == STMT_BREAK ? "break" : "continue");
+            diagnostic_error(diagnostics,
+                             stmt->span,
+                             "semantic",
+                             "'%s' used outside of loop",
+                             stmt->kind == STMT_BREAK ? "break" : "continue");
             return false;
         }
-        *always_returns = true;
+        *out_flow = stmt->kind == STMT_BREAK ? FLOW_BREAK : FLOW_CONTINUE;
         return true;
     }
 
     return false;
 }
 
-static bool check_statements(const Stmt *const *statements,
-                             size_t statement_count,
-                             const SymbolTable *input_symbols,
-                             const FunctionTable *functions,
+static bool check_statements(const Block *block,
+                             SymbolTable *symbols,
+                             size_t scope_start,
+                             const CheckedProgram *checked,
                              size_t loop_depth,
-                             bool *always_returns) {
-    SymbolTable symbols = *input_symbols;
-    size_t scope_start = input_symbols->count;
-    *always_returns = false;
-    bool saw_terminator = false;
+                             DiagnosticSink *diagnostics,
+                             FlowFlags *out_flow) {
+    FlowFlags flow = FLOW_FALLTHROUGH;
 
-    for (size_t i = 0; i < statement_count; i++) {
-        bool stmt_returns = false;
-        if (!check_statement(statements[i], &symbols, scope_start, functions, loop_depth, &stmt_returns)) {
+    for (size_t i = 0; i < block->count; i++) {
+        FlowFlags stmt_flow = FLOW_NONE;
+        if (!check_statement(block->statements[i],
+                             symbols,
+                             scope_start,
+                             checked,
+                             loop_depth,
+                             diagnostics,
+                             &stmt_flow)) {
             return false;
         }
-        if (stmt_returns) {
-            saw_terminator = true;
+        block->statements[i]->flow_flags = stmt_flow;
+        if ((flow & FLOW_FALLTHROUGH) != 0) {
+            flow = (flow & ~FLOW_FALLTHROUGH) | stmt_flow;
         }
     }
-    *always_returns = saw_terminator;
+
+    *out_flow = flow;
     return true;
 }
 
-static bool check_function(const Function *function, const FunctionTable *functions) {
+static bool check_function(Function *function, const CheckedProgram *checked, DiagnosticSink *diagnostics) {
     SymbolTable symbols = {0};
-    bool always_returns = false;
-
-    if (function->param_count > 256) {
-        fprintf(stderr, "semantic error: too many parameters in function '%.*s'\n",
-                (int) function->name_length, function->name);
-        return false;
-    }
+    FlowFlags flow = FLOW_NONE;
+    bool ok = true;
 
     for (size_t i = 0; i < function->param_count; i++) {
-        const Param *param = &function->params[i];
-        if (!symbol_table_insert(&symbols, 0, param->name, param->length, param->type, false)) {
-            return false;
+        Param *param = &function->params[i];
+        if (!symbol_table_insert(&symbols,
+                                 0,
+                                 param->name,
+                                 param->length,
+                                 param->type,
+                                 false,
+                                 param->span,
+                                 diagnostics,
+                                 &param->symbol_id)) {
+            ok = false;
+            goto cleanup;
         }
     }
 
-    if (!check_statements((const Stmt *const *) function->statements,
-                          function->statement_count,
+    if (!check_statements(&function->body,
                           &symbols,
-                          functions,
+                          symbols.count,
+                          checked,
                           0,
-                          &always_returns)) {
-        return false;
+                          diagnostics,
+                          &flow)) {
+        ok = false;
+        goto cleanup;
     }
 
-    if (!always_returns) {
-        fprintf(stderr, "semantic error: function '%.*s' must end with return\n",
-                (int) function->name_length, function->name);
-        return false;
+    function->symbol_count = symbols.next_symbol_id;
+    if ((flow & FLOW_FALLTHROUGH) != 0) {
+        diagnostic_error(diagnostics,
+                         function->span,
+                         "semantic",
+                         "function '%.*s' must not fall through without returning",
+                         (int) function->name_length,
+                         function->name);
+        ok = false;
     }
-    return true;
+
+cleanup:
+    free(symbols.items);
+    return ok;
 }
 
-bool semantic_check_program(const Program *program) {
+bool semantic_check_program(Program *program, DiagnosticSink *diagnostics, CheckedProgram *out_checked) {
     bool has_main = false;
-    FunctionTable functions = {0};
+
+    *out_checked = (CheckedProgram) {.program = program};
 
     for (size_t i = 0; i < program->function_count; i++) {
-        const Function *function = program->functions[i];
-        if (lookup_function(&functions, function->name, function->name_length) != NULL) {
-            fprintf(stderr, "semantic error: duplicate function '%.*s'\n",
-                    (int) function->name_length, function->name);
+        Function *function = program->functions[i];
+        if (lookup_function(out_checked, function->name, function->name_length, NULL) != NULL) {
+            diagnostic_error(diagnostics,
+                             function->span,
+                             "semantic",
+                             "duplicate function '%.*s'",
+                             (int) function->name_length,
+                             function->name);
             return false;
         }
-        if (functions.count >= 256) {
-            fprintf(stderr, "semantic error: too many functions\n");
-            return false;
-        }
-        functions.items[functions.count++] = (FunctionSignature) {
-            .name = function->name,
-            .length = function->name_length,
-            .param_count = function->param_count
-        };
+        checked_program_append(out_checked, function);
         if (same_name(function->name, function->name_length, "main", 4)) {
             if (function->param_count != 0 || function->return_type != TYPE_I32) {
-                fprintf(stderr, "semantic error: expected fn main() -> i32\n");
+                diagnostic_error(diagnostics, function->span, "semantic", "expected fn main() -> i32");
                 return false;
             }
             has_main = true;
@@ -365,14 +450,19 @@ bool semantic_check_program(const Program *program) {
     }
 
     if (!has_main) {
-        fprintf(stderr, "semantic error: expected fn main() -> i32\n");
+        diagnostic_error(diagnostics, (SourceSpan) {0}, "semantic", "expected fn main() -> i32");
         return false;
     }
 
     for (size_t i = 0; i < program->function_count; i++) {
-        if (!check_function(program->functions[i], &functions)) {
+        if (!check_function(program->functions[i], out_checked, diagnostics)) {
             return false;
         }
     }
     return true;
+}
+
+void checked_program_destroy(CheckedProgram *checked) {
+    free(checked->functions);
+    *checked = (CheckedProgram) {0};
 }

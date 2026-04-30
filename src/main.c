@@ -45,6 +45,8 @@ int main(int argc, char **argv) {
         usage(argv[0]);
         return 1;
     }
+    DiagnosticSink diagnostics;
+    diagnostic_sink_init(&diagnostics, stderr);
 
     char *source = read_file(argv[1]);
     if (source == NULL) {
@@ -52,15 +54,17 @@ int main(int argc, char **argv) {
     }
 
     Parser parser;
-    parser_init(&parser, source);
+    parser_init(&parser, source, &diagnostics);
     Program *program = parse_program(&parser);
+    free(source);
     if (program == NULL) {
-        free(source);
         return 1;
     }
 
-    bool ok = semantic_check_program(program) && codegen_emit_ir(program, argv[2]);
+    CheckedProgram checked = {0};
+    bool ok = semantic_check_program(program, &diagnostics, &checked) &&
+              codegen_emit_ir(&checked, argv[2], &diagnostics);
+    checked_program_destroy(&checked);
     program_destroy(program);
-    free(source);
     return ok ? 0 : 1;
 }

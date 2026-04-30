@@ -8,6 +8,10 @@ static long max_i32_magnitude(void) {
     return (long) INT32_MAX + 1;
 }
 
+static SourceSpan token_span(Token token) {
+    return (SourceSpan) {.line = token.line, .column = token.column};
+}
+
 static void parser_advance(Parser *parser) {
     parser->current = parser->next;
     parser->next = lexer_next(&parser->lexer);
@@ -21,22 +25,19 @@ static bool parser_expect(Parser *parser, TokenKind kind, const char *what) {
         parser_advance(parser);
         return true;
     }
-    fprintf(stderr,
-            "parse error at %zu:%zu: expected %s, found %s\n",
-            parser->current.line,
-            parser->current.column,
-            what,
-            token_kind_name(parser->current.kind));
+    diagnostic_error(parser->diagnostics,
+                     token_span(parser->current),
+                     "parse",
+                     "expected %s, found %s",
+                     what,
+                     token_kind_name(parser->current.kind));
     parser->has_error = true;
     return false;
 }
 
 static bool parse_type(Parser *parser, TypeKind *out_type) {
     if (parser->current.kind != TOKEN_I32) {
-        fprintf(stderr,
-                "parse error at %zu:%zu: only i32 is supported\n",
-                parser->current.line,
-                parser->current.column);
+        diagnostic_error(parser->diagnostics, token_span(parser->current), "parse", "only i32 is supported");
         parser->has_error = true;
         return false;
     }
@@ -111,34 +112,33 @@ static Expr *parse_unary(Parser *parser) {
     }
 
     if (parser->current.kind == TOKEN_MINUS) {
+        Token op_token = parser->current;
         parser_advance(parser);
         if (parser->current.kind == TOKEN_INTEGER) {
             Token token = parser->current;
             if (token.integer_value > max_i32_magnitude()) {
-                fprintf(stderr,
-                        "parse error at %zu:%zu: integer literal overflow\n",
-                        token.line,
-                        token.column);
+                diagnostic_error(parser->diagnostics, token_span(token), "parse", "integer literal overflow");
                 parser->has_error = true;
                 return NULL;
             }
             parser_advance(parser);
-            return expr_create_integer(-token.integer_value);
+            return expr_create_integer(-token.integer_value, token_span(op_token));
         }
         Expr *operand = parse_unary(parser);
         if (operand == NULL) {
             return NULL;
         }
-        return expr_create_unary(UNARY_NEG, operand);
+        return expr_create_unary(UNARY_NEG, operand, token_span(op_token));
     }
 
     if (parser->current.kind == TOKEN_BANG) {
+        Token op_token = parser->current;
         parser_advance(parser);
         Expr *operand = parse_unary(parser);
         if (operand == NULL) {
             return NULL;
         }
-        return expr_create_unary(UNARY_NOT, operand);
+        return expr_create_unary(UNARY_NOT, operand, token_span(op_token));
     }
 
     return parse_primary(parser);
@@ -148,22 +148,19 @@ static Expr *parse_primary(Parser *parser) {
     Token token = parser->current;
     if (token.kind == TOKEN_INTEGER) {
         if (token.integer_value > INT32_MAX) {
-            fprintf(stderr,
-                    "parse error at %zu:%zu: integer literal overflow\n",
-                    token.line,
-                    token.column);
+            diagnostic_error(parser->diagnostics, token_span(token), "parse", "integer literal overflow");
             parser->has_error = true;
             return NULL;
         }
         parser_advance(parser);
-        return expr_create_integer(token.integer_value);
+        return expr_create_integer(token.integer_value, token_span(token));
     }
     if (token.kind == TOKEN_IDENTIFIER) {
         parser_advance(parser);
         if (parser->current.kind == TOKEN_LPAREN) {
             return parse_call(parser, token);
         }
-        return expr_create_name(token.lexeme, token.length);
+        return expr_create_name(token.lexeme, token.length, token_span(token));
     }
     if (token.kind == TOKEN_LPAREN) {
         parser_advance(parser);
@@ -175,17 +172,17 @@ static Expr *parse_primary(Parser *parser) {
         return expr;
     }
 
-    fprintf(stderr,
-            "parse error at %zu:%zu: expected expression, found %s\n",
-            token.line,
-            token.column,
-            token_kind_name(token.kind));
+    diagnostic_error(parser->diagnostics,
+                     token_span(token),
+                     "parse",
+                     "expected expression, found %s",
+                     token_kind_name(token.kind));
     parser->has_error = true;
     return NULL;
 }
 
 static Expr *parse_call(Parser *parser, Token callee) {
-    Expr *call = expr_create_call(callee.lexeme, callee.length);
+    Expr *call = expr_create_call(callee.lexeme, callee.length, token_span(callee));
     if (!parser_expect(parser, TOKEN_LPAREN, "'('")) {
         expr_destroy(call);
         return NULL;
@@ -240,7 +237,7 @@ static Expr *parse_multiplicative(Parser *parser) {
             default:
                 break;
         }
-        expr = expr_create_binary(binary_op, expr, rhs);
+        expr = expr_create_binary(binary_op, expr, rhs, expr->span);
     }
     return expr;
 }
@@ -256,7 +253,7 @@ static Expr *parse_additive(Parser *parser) {
             expr_destroy(expr);
             return NULL;
         }
-        expr = expr_create_binary(op == TOKEN_PLUS ? BINARY_ADD : BINARY_SUB, expr, rhs);
+        expr = expr_create_binary(op == TOKEN_PLUS ? BINARY_ADD : BINARY_SUB, expr, rhs, expr->span);
     }
     return expr;
 }
@@ -292,7 +289,7 @@ static Expr *parse_comparison(Parser *parser) {
             default:
                 break;
         }
-        expr = expr_create_binary(binary_op, expr, rhs);
+        expr = expr_create_binary(binary_op, expr, rhs, expr->span);
     }
     return expr;
 }
@@ -308,7 +305,7 @@ static Expr *parse_equality(Parser *parser) {
             expr_destroy(expr);
             return NULL;
         }
-        expr = expr_create_binary(op == TOKEN_EQUAL_EQUAL ? BINARY_EQ : BINARY_NE, expr, rhs);
+        expr = expr_create_binary(op == TOKEN_EQUAL_EQUAL ? BINARY_EQ : BINARY_NE, expr, rhs, expr->span);
     }
     return expr;
 }
@@ -318,18 +315,20 @@ static Expr *parse_expr(Parser *parser) {
 }
 
 static Stmt *parse_if_statement(Parser *parser) {
+    Token if_token = parser->current;
     parser_advance(parser);
     Expr *condition = parse_expr(parser);
     if (condition == NULL) {
         return NULL;
     }
-    Stmt *if_stmt = stmt_create_if(condition);
+    Stmt *if_stmt = stmt_create_if(condition, token_span(if_token));
     if (!parse_block(parser, if_stmt, BLOCK_IF_THEN)) {
         stmt_destroy(if_stmt);
         return NULL;
     }
     if (parser->current.kind == TOKEN_ELSE) {
         parser_advance(parser);
+        if_stmt->if_stmt.has_else = true;
         if (!parse_else_branch(parser, if_stmt)) {
             stmt_destroy(if_stmt);
             return NULL;
@@ -340,11 +339,13 @@ static Stmt *parse_if_statement(Parser *parser) {
 
 static Stmt *parse_statement(Parser *parser, bool allow_implicit_return) {
     if (parser->current.kind == TOKEN_SEMICOLON) {
+        Token token = parser->current;
         parser_advance(parser);
-        return stmt_create_empty();
+        return stmt_create_empty(token_span(token));
     }
 
     if (parser->current.kind == TOKEN_LET) {
+        Token let_token = parser->current;
         parser_advance(parser);
         bool is_mutable = false;
         if (parser->current.kind == TOKEN_MUT) {
@@ -373,7 +374,7 @@ static Stmt *parse_statement(Parser *parser, bool allow_implicit_return) {
             expr_destroy(value);
             return NULL;
         }
-        return stmt_create_let(name.lexeme, name.length, type, is_mutable, value);
+        return stmt_create_let(name.lexeme, name.length, type, is_mutable, value, token_span(let_token));
     }
 
     if (parser->current.kind == TOKEN_IDENTIFIER && parser->next.kind == TOKEN_EQUAL) {
@@ -388,10 +389,11 @@ static Stmt *parse_statement(Parser *parser, bool allow_implicit_return) {
             expr_destroy(value);
             return NULL;
         }
-        return stmt_create_assign(name.lexeme, name.length, value);
+        return stmt_create_assign(name.lexeme, name.length, value, token_span(name));
     }
 
     if (parser->current.kind == TOKEN_RETURN) {
+        Token return_token = parser->current;
         parser_advance(parser);
         Expr *value = parse_expr(parser);
         if (value == NULL) {
@@ -401,23 +403,25 @@ static Stmt *parse_statement(Parser *parser, bool allow_implicit_return) {
             expr_destroy(value);
             return NULL;
         }
-        return stmt_create_return(value);
+        return stmt_create_return(value, token_span(return_token));
     }
 
     if (parser->current.kind == TOKEN_BREAK) {
+        Token break_token = parser->current;
         parser_advance(parser);
         if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
             return NULL;
         }
-        return stmt_create_break();
+        return stmt_create_break(token_span(break_token));
     }
 
     if (parser->current.kind == TOKEN_CONTINUE) {
+        Token continue_token = parser->current;
         parser_advance(parser);
         if (!parser_expect(parser, TOKEN_SEMICOLON, "';'")) {
             return NULL;
         }
-        return stmt_create_continue();
+        return stmt_create_continue(token_span(continue_token));
     }
 
     if (parser->current.kind == TOKEN_IF) {
@@ -425,12 +429,13 @@ static Stmt *parse_statement(Parser *parser, bool allow_implicit_return) {
     }
 
     if (parser->current.kind == TOKEN_WHILE) {
+        Token while_token = parser->current;
         parser_advance(parser);
         Expr *condition = parse_expr(parser);
         if (condition == NULL) {
             return NULL;
         }
-        Stmt *while_stmt = stmt_create_while(condition);
+        Stmt *while_stmt = stmt_create_while(condition, token_span(while_token));
         if (!parse_block(parser, while_stmt, BLOCK_WHILE_BODY)) {
             stmt_destroy(while_stmt);
             return NULL;
@@ -439,8 +444,9 @@ static Stmt *parse_statement(Parser *parser, bool allow_implicit_return) {
     }
 
     if (parser->current.kind == TOKEN_LOOP) {
+        Token loop_token = parser->current;
         parser_advance(parser);
-        Stmt *loop_stmt = stmt_create_loop();
+        Stmt *loop_stmt = stmt_create_loop(token_span(loop_token));
         if (!parse_block(parser, loop_stmt, BLOCK_LOOP_BODY)) {
             stmt_destroy(loop_stmt);
             return NULL;
@@ -449,7 +455,8 @@ static Stmt *parse_statement(Parser *parser, bool allow_implicit_return) {
     }
 
     if (parser->current.kind == TOKEN_LBRACE) {
-        Stmt *block_stmt = stmt_create_block();
+        Token brace_token = parser->current;
+        Stmt *block_stmt = stmt_create_block(token_span(brace_token));
         if (!parse_block(parser, block_stmt, BLOCK_STANDALONE)) {
             stmt_destroy(block_stmt);
             return NULL;
@@ -465,34 +472,34 @@ static Stmt *parse_statement(Parser *parser, bool allow_implicit_return) {
         }
         if (parser->current.kind == TOKEN_SEMICOLON) {
             parser_advance(parser);
-            return stmt_create_expr(value);
+            return stmt_create_expr(value, value->span);
         }
         if (parser->current.kind == TOKEN_RBRACE && allow_implicit_return) {
-            return stmt_create_return(value);
+            return stmt_create_return(value, value->span);
         }
         if (starts_with_identifier) {
-            fprintf(stderr,
-                    "parse error at %zu:%zu: expected '=' or ';' after expression statement\n",
-                    parser->current.line,
-                    parser->current.column);
+            diagnostic_error(parser->diagnostics,
+                             token_span(parser->current),
+                             "parse",
+                             "expected '=' or ';' after expression statement");
             parser->has_error = true;
             expr_destroy(value);
             return NULL;
         }
-        fprintf(stderr,
-                "parse error at %zu:%zu: expected ';' after expression\n",
-                parser->current.line,
-                parser->current.column);
+        diagnostic_error(parser->diagnostics,
+                         token_span(parser->current),
+                         "parse",
+                         "expected ';' after expression");
         parser->has_error = true;
         expr_destroy(value);
         return NULL;
     }
 
-    fprintf(stderr,
-            "parse error at %zu:%zu: expected statement, found %s\n",
-            parser->current.line,
-            parser->current.column,
-            token_kind_name(parser->current.kind));
+    diagnostic_error(parser->diagnostics,
+                     token_span(parser->current),
+                     "parse",
+                     "expected statement, found %s",
+                     token_kind_name(parser->current.kind));
     parser->has_error = true;
     return NULL;
 }
@@ -509,7 +516,7 @@ static Function *parse_function(Parser *parser) {
     if (!parser_expect(parser, TOKEN_LPAREN, "'('")) {
         return NULL;
     }
-    Function *function = function_create(name.lexeme, name.length, TYPE_I32);
+    Function *function = function_create(name.lexeme, name.length, TYPE_I32, token_span(name));
     while (!parser->has_error && parser->current.kind != TOKEN_RPAREN) {
         Token param_name = parser->current;
         if (!parser_expect(parser, TOKEN_IDENTIFIER, "parameter name")) {
@@ -522,7 +529,7 @@ static Function *parse_function(Parser *parser) {
         if (!parse_type(parser, &param_type)) {
             return function;
         }
-        function_append_param(function, param_name.lexeme, param_name.length, param_type);
+        function_append_param(function, param_name.lexeme, param_name.length, param_type, token_span(param_name));
         if (parser->current.kind == TOKEN_COMMA) {
             parser_advance(parser);
             if (parser->current.kind == TOKEN_RPAREN) {
@@ -562,8 +569,9 @@ static Function *parse_function(Parser *parser) {
     return function;
 }
 
-void parser_init(Parser *parser, const char *source) {
-    lexer_init(&parser->lexer, source);
+void parser_init(Parser *parser, const char *source, DiagnosticSink *diagnostics) {
+    parser->diagnostics = diagnostics;
+    lexer_init(&parser->lexer, source, diagnostics);
     parser->has_error = false;
     parser->current = lexer_next(&parser->lexer);
     parser->next = lexer_next(&parser->lexer);

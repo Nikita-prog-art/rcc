@@ -7,45 +7,42 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct Local {
-    const char *name;
-    size_t length;
-    LLVMValueRef storage;
-} Local;
-
 typedef struct CodegenContext {
     LLVMContextRef llvm_context;
     LLVMModuleRef module;
     LLVMBuilderRef builder;
-    LLVMValueRef functions[256];
-    LLVMTypeRef function_types[256];
-    const Function *function_defs[256];
-    size_t function_count;
-    Local locals[256];
+    const CheckedProgram *checked;
+    LLVMValueRef *functions;
+    LLVMTypeRef *function_types;
+    LLVMValueRef *locals;
     size_t local_count;
-    LLVMBasicBlockRef loop_continue_blocks[256];
-    LLVMBasicBlockRef loop_break_blocks[256];
+    LLVMBasicBlockRef *loop_continue_blocks;
+    LLVMBasicBlockRef *loop_break_blocks;
     size_t loop_depth;
+    size_t loop_capacity;
     unsigned temp_counter;
+    DiagnosticSink *diagnostics;
 } CodegenContext;
 
-enum {
-    MAX_FUNCTIONS = 256,
-    MAX_LOCALS = 256,
-    MAX_LOOP_DEPTH = 256
-};
+static void *xcalloc(size_t count, size_t size) {
+    void *ptr = calloc(count == 0 ? 1 : count, size == 0 ? 1 : size);
+    if (ptr == NULL) {
+        abort();
+    }
+    return ptr;
+}
 
-static bool same_name(const char *lhs, size_t lhs_len, const char *rhs, size_t rhs_len) {
-    return lhs_len == rhs_len && strncmp(lhs, rhs, lhs_len) == 0;
+static void *xrealloc(void *ptr, size_t size) {
+    void *next = realloc(ptr, size);
+    if (next == NULL) {
+        abort();
+    }
+    return next;
 }
 
 static char *copy_name(const char *name, size_t length) {
-    char *buffer = malloc(length + 1);
-    if (buffer == NULL) {
-        return NULL;
-    }
+    char *buffer = xcalloc(length + 1, 1);
     memcpy(buffer, name, length);
-    buffer[length] = '\0';
     return buffer;
 }
 
@@ -57,13 +54,21 @@ static LLVMTypeRef llvm_type(TypeKind type, LLVMContextRef llvm_context) {
     return LLVMInt32TypeInContext(llvm_context);
 }
 
-static LLVMValueRef lookup_local(const CodegenContext *context, const char *name, size_t length) {
-    for (size_t i = context->local_count; i > 0; i--) {
-        if (same_name(name, length, context->locals[i - 1].name, context->locals[i - 1].length)) {
-            return context->locals[i - 1].storage;
-        }
+static bool set_local(CodegenContext *context, size_t symbol_id, LLVMValueRef storage) {
+    if (symbol_id >= context->local_count) {
+        diagnostic_error(context->diagnostics, (SourceSpan) {0}, "codegen", "unresolved local symbol");
+        return false;
     }
-    return NULL;
+    context->locals[symbol_id] = storage;
+    return true;
+}
+
+static LLVMValueRef get_local(CodegenContext *context, size_t symbol_id, SourceSpan span) {
+    if (symbol_id >= context->local_count || context->locals[symbol_id] == NULL) {
+        diagnostic_error(context->diagnostics, span, "codegen", "unresolved local symbol");
+        return NULL;
+    }
+    return context->locals[symbol_id];
 }
 
 static LLVMValueRef create_entry_alloca(CodegenContext *context, LLVMValueRef llvm_function, const char *name) {
@@ -80,43 +85,13 @@ static LLVMValueRef create_entry_alloca(CodegenContext *context, LLVMValueRef ll
     return alloca_inst;
 }
 
-static bool define_local(CodegenContext *context, const char *name, size_t length, LLVMValueRef storage) {
-    if (context->local_count >= MAX_LOCALS) {
-        fprintf(stderr, "codegen error: too many locals\n");
-        return false;
-    }
-    context->locals[context->local_count++] = (Local) {.name = name, .length = length, .storage = storage};
-    return true;
-}
-
-static LLVMValueRef lookup_function(const CodegenContext *context, const char *name, size_t length) {
-    for (size_t i = 0; i < context->function_count; i++) {
-        const Function *function = context->function_defs[i];
-        if (same_name(name, length, function->name, function->name_length)) {
-            return context->functions[i];
-        }
-    }
-    return NULL;
-}
-
-static LLVMTypeRef lookup_function_type(const CodegenContext *context, const char *name, size_t length) {
-    for (size_t i = 0; i < context->function_count; i++) {
-        const Function *function = context->function_defs[i];
-        if (same_name(name, length, function->name, function->name_length)) {
-            return context->function_types[i];
-        }
-    }
-    return NULL;
-}
-
 static LLVMValueRef emit_expr(CodegenContext *context, const Expr *expr) {
     switch (expr->kind) {
         case EXPR_INTEGER:
             return LLVMConstInt(LLVMInt32TypeInContext(context->llvm_context), (unsigned long long) expr->integer_value, true);
         case EXPR_NAME: {
-            LLVMValueRef storage = lookup_local(context, expr->name.name, expr->name.length);
+            LLVMValueRef storage = get_local(context, expr->name.symbol_id, expr->span);
             if (storage == NULL) {
-                fprintf(stderr, "codegen error: undefined variable '%.*s'\n", (int) expr->name.length, expr->name.name);
                 return NULL;
             }
             return LLVMBuildLoad2(
@@ -201,56 +176,57 @@ static LLVMValueRef emit_expr(CodegenContext *context, const Expr *expr) {
             return NULL;
         }
         case EXPR_CALL: {
-            LLVMValueRef callee = lookup_function(context, expr->call.callee, expr->call.callee_length);
-            LLVMTypeRef callee_type = lookup_function_type(context, expr->call.callee, expr->call.callee_length);
-            LLVMValueRef args[256];
-            if (callee == NULL || callee_type == NULL) {
-                fprintf(stderr, "codegen error: undefined function '%.*s'\n",
-                        (int) expr->call.callee_length, expr->call.callee);
-                return NULL;
+            LLVMValueRef callee = NULL;
+            LLVMTypeRef callee_type = NULL;
+            LLVMValueRef *args = xcalloc(expr->call.arg_count, sizeof(LLVMValueRef));
+            LLVMValueRef result = NULL;
+
+            if (expr->call.function_id >= context->checked->function_count) {
+                diagnostic_error(context->diagnostics, expr->span, "codegen", "unresolved function call");
+                goto cleanup;
             }
-            if (expr->call.arg_count > 256) {
-                fprintf(stderr, "codegen error: too many call args\n");
-                return NULL;
+            callee = context->functions[expr->call.function_id];
+            callee_type = context->function_types[expr->call.function_id];
+            if (callee == NULL || callee_type == NULL) {
+                diagnostic_error(context->diagnostics, expr->span, "codegen", "unresolved function call");
+                goto cleanup;
             }
             for (size_t i = 0; i < expr->call.arg_count; i++) {
                 args[i] = emit_expr(context, expr->call.args[i]);
                 if (args[i] == NULL) {
-                    return NULL;
+                    goto cleanup;
                 }
             }
-            return LLVMBuildCall2(
+            result = LLVMBuildCall2(
                 context->builder,
                 callee_type,
                 callee,
                 args,
                 (unsigned) expr->call.arg_count,
                 "calltmp");
+
+        cleanup:
+            free(args);
+            return result;
         }
     }
     return NULL;
 }
 
 static LLVMValueRef declare_function(CodegenContext *context, const Function *function, LLVMTypeRef *out_type) {
-    LLVMTypeRef param_types[256];
-    if (function->param_count > 256) {
-        fprintf(stderr, "codegen error: too many function parameters\n");
-        return NULL;
-    }
+    LLVMTypeRef *param_types = xcalloc(function->param_count, sizeof(LLVMTypeRef));
     for (size_t i = 0; i < function->param_count; i++) {
         param_types[i] = llvm_type(function->params[i].type, context->llvm_context);
     }
     LLVMTypeRef function_type = LLVMFunctionType(
         llvm_type(function->return_type, context->llvm_context),
-        param_types,
+        function->param_count == 0 ? NULL : param_types,
         (unsigned) function->param_count,
         false);
     char *name = copy_name(function->name, function->name_length);
-    if (name == NULL) {
-        return NULL;
-    }
     LLVMValueRef llvm_function = LLVMAddFunction(context->module, name, function_type);
     free(name);
+    free(param_types);
     *out_type = function_type;
     return llvm_function;
 }
@@ -260,9 +236,13 @@ static bool block_has_terminator(LLVMBasicBlockRef block) {
 }
 
 static bool push_loop(CodegenContext *context, LLVMBasicBlockRef continue_block, LLVMBasicBlockRef break_block) {
-    if (context->loop_depth >= MAX_LOOP_DEPTH) {
-        fprintf(stderr, "codegen error: loop nesting limit exceeded\n");
-        return false;
+    if (context->loop_depth >= context->loop_capacity) {
+        size_t next_capacity = context->loop_capacity == 0 ? 8 : context->loop_capacity * 2;
+        context->loop_continue_blocks =
+            xrealloc(context->loop_continue_blocks, next_capacity * sizeof(LLVMBasicBlockRef));
+        context->loop_break_blocks =
+            xrealloc(context->loop_break_blocks, next_capacity * sizeof(LLVMBasicBlockRef));
+        context->loop_capacity = next_capacity;
     }
     context->loop_continue_blocks[context->loop_depth] = continue_block;
     context->loop_break_blocks[context->loop_depth] = break_block;
@@ -272,12 +252,9 @@ static bool push_loop(CodegenContext *context, LLVMBasicBlockRef continue_block,
 
 static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function);
 
-static bool emit_statement_list(CodegenContext *context,
-                                const Stmt *const *statements,
-                                size_t statement_count,
-                                LLVMValueRef llvm_function) {
-    for (size_t i = 0; i < statement_count; i++) {
-        if (!emit_statement(context, statements[i], llvm_function)) {
+static bool emit_statement_list(CodegenContext *context, const Block *block, LLVMValueRef llvm_function) {
+    for (size_t i = 0; i < block->count; i++) {
+        if (!emit_statement(context, block->statements[i], llvm_function)) {
             return false;
         }
         if (block_has_terminator(LLVMGetInsertBlock(context->builder))) {
@@ -287,32 +264,15 @@ static bool emit_statement_list(CodegenContext *context,
     return true;
 }
 
-static bool emit_block_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
-    size_t saved_local_count = context->local_count;
-    if (!emit_statement_list(context,
-                             (const Stmt *const *) stmt->block_stmt.statements,
-                             stmt->block_stmt.statement_count,
-                             llvm_function)) {
-        return false;
-    }
-    if (!block_has_terminator(LLVMGetInsertBlock(context->builder))) {
-        context->local_count = saved_local_count;
-    }
-    return true;
-}
-
 static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
     LLVMValueRef condition_value = emit_expr(context, stmt->if_stmt.condition);
     char then_name[32];
     char else_name[32];
     char merge_name[32];
-    Local saved_locals[256];
-    size_t saved_local_count = context->local_count;
 
     if (condition_value == NULL) {
         return false;
     }
-    memcpy(saved_locals, context->locals, sizeof(saved_locals));
     snprintf(then_name, sizeof(then_name), "then_%u", context->temp_counter);
     snprintf(else_name, sizeof(else_name), "else_%u", context->temp_counter);
     snprintf(merge_name, sizeof(merge_name), "ifend_%u", context->temp_counter);
@@ -327,12 +287,7 @@ static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMVal
     LLVMBuildCondBr(context->builder, is_true, then_block, else_block);
 
     LLVMPositionBuilderAtEnd(context->builder, then_block);
-    context->local_count = saved_local_count;
-    memcpy(context->locals, saved_locals, sizeof(saved_locals));
-    if (!emit_statement_list(context,
-                             (const Stmt *const *) stmt->if_stmt.then_statements,
-                             stmt->if_stmt.then_count,
-                             llvm_function)) {
+    if (!emit_statement_list(context, &stmt->if_stmt.then_block, llvm_function)) {
         return false;
     }
     bool then_falls_through = !block_has_terminator(LLVMGetInsertBlock(context->builder));
@@ -341,12 +296,7 @@ static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMVal
     }
 
     LLVMPositionBuilderAtEnd(context->builder, else_block);
-    context->local_count = saved_local_count;
-    memcpy(context->locals, saved_locals, sizeof(saved_locals));
-    if (!emit_statement_list(context,
-                             (const Stmt *const *) stmt->if_stmt.else_statements,
-                             stmt->if_stmt.else_count,
-                             llvm_function)) {
+    if (!emit_statement_list(context, &stmt->if_stmt.else_block, llvm_function)) {
         return false;
     }
     bool else_falls_through = !block_has_terminator(LLVMGetInsertBlock(context->builder));
@@ -360,8 +310,6 @@ static bool emit_if_statement(CodegenContext *context, const Stmt *stmt, LLVMVal
     }
 
     LLVMPositionBuilderAtEnd(context->builder, merge_block);
-    context->local_count = saved_local_count;
-    memcpy(context->locals, saved_locals, sizeof(saved_locals));
     return true;
 }
 
@@ -369,10 +317,7 @@ static bool emit_while_statement(CodegenContext *context, const Stmt *stmt, LLVM
     char cond_name[32];
     char body_name[32];
     char exit_name[32];
-    Local saved_locals[256];
-    size_t saved_local_count = context->local_count;
 
-    memcpy(saved_locals, context->locals, sizeof(saved_locals));
     snprintf(cond_name, sizeof(cond_name), "while_cond_%u", context->temp_counter);
     snprintf(body_name, sizeof(body_name), "while_body_%u", context->temp_counter);
     snprintf(exit_name, sizeof(exit_name), "while_end_%u", context->temp_counter);
@@ -385,8 +330,6 @@ static bool emit_while_statement(CodegenContext *context, const Stmt *stmt, LLVM
     LLVMBuildBr(context->builder, cond_block);
 
     LLVMPositionBuilderAtEnd(context->builder, cond_block);
-    context->local_count = saved_local_count;
-    memcpy(context->locals, saved_locals, sizeof(saved_locals));
     LLVMValueRef condition_value = emit_expr(context, stmt->while_stmt.condition);
     if (condition_value == NULL) {
         return false;
@@ -396,15 +339,10 @@ static bool emit_while_statement(CodegenContext *context, const Stmt *stmt, LLVM
     LLVMBuildCondBr(context->builder, is_true, body_block, exit_block);
 
     LLVMPositionBuilderAtEnd(context->builder, body_block);
-    context->local_count = saved_local_count;
-    memcpy(context->locals, saved_locals, sizeof(saved_locals));
     if (!push_loop(context, cond_block, exit_block)) {
         return false;
     }
-    if (!emit_statement_list(context,
-                             (const Stmt *const *) stmt->while_stmt.body_statements,
-                             stmt->while_stmt.body_count,
-                             llvm_function)) {
+    if (!emit_statement_list(context, &stmt->while_stmt.body, llvm_function)) {
         context->loop_depth--;
         return false;
     }
@@ -414,18 +352,13 @@ static bool emit_while_statement(CodegenContext *context, const Stmt *stmt, LLVM
     }
 
     LLVMPositionBuilderAtEnd(context->builder, exit_block);
-    context->local_count = saved_local_count;
-    memcpy(context->locals, saved_locals, sizeof(saved_locals));
     return true;
 }
 
 static bool emit_loop_statement(CodegenContext *context, const Stmt *stmt, LLVMValueRef llvm_function) {
     char body_name[32];
     char exit_name[32];
-    Local saved_locals[256];
-    size_t saved_local_count = context->local_count;
 
-    memcpy(saved_locals, context->locals, sizeof(saved_locals));
     snprintf(body_name, sizeof(body_name), "loop_body_%u", context->temp_counter);
     snprintf(exit_name, sizeof(exit_name), "loop_end_%u", context->temp_counter);
     context->temp_counter++;
@@ -436,15 +369,10 @@ static bool emit_loop_statement(CodegenContext *context, const Stmt *stmt, LLVMV
     LLVMBuildBr(context->builder, body_block);
 
     LLVMPositionBuilderAtEnd(context->builder, body_block);
-    context->local_count = saved_local_count;
-    memcpy(context->locals, saved_locals, sizeof(saved_locals));
     if (!push_loop(context, body_block, exit_block)) {
         return false;
     }
-    if (!emit_statement_list(context,
-                             (const Stmt *const *) stmt->loop_stmt.body_statements,
-                             stmt->loop_stmt.body_count,
-                             llvm_function)) {
+    if (!emit_statement_list(context, &stmt->loop_stmt.body, llvm_function)) {
         context->loop_depth--;
         return false;
     }
@@ -453,9 +381,12 @@ static bool emit_loop_statement(CodegenContext *context, const Stmt *stmt, LLVMV
         LLVMBuildBr(context->builder, body_block);
     }
 
+    if ((stmt->flow_flags & FLOW_FALLTHROUGH) == 0) {
+        LLVMDeleteBasicBlock(exit_block);
+        return true;
+    }
+
     LLVMPositionBuilderAtEnd(context->builder, exit_block);
-    context->local_count = saved_local_count;
-    memcpy(context->locals, saved_locals, sizeof(saved_locals));
     return true;
 }
 
@@ -464,18 +395,18 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
         LLVMValueRef value = emit_expr(context, stmt->let_stmt.value);
         char *name = copy_name(stmt->let_stmt.name, stmt->let_stmt.length);
         LLVMValueRef storage;
-        if (value == NULL || name == NULL) {
+        if (value == NULL) {
             free(name);
             return false;
         }
         storage = create_entry_alloca(context, llvm_function, name);
         free(name);
         LLVMBuildStore(context->builder, value, storage);
-        return define_local(context, stmt->let_stmt.name, stmt->let_stmt.length, storage);
+        return set_local(context, stmt->let_stmt.symbol_id, storage);
     }
 
     if (stmt->kind == STMT_ASSIGN) {
-        LLVMValueRef storage = lookup_local(context, stmt->assign_stmt.name, stmt->assign_stmt.length);
+        LLVMValueRef storage = get_local(context, stmt->assign_stmt.symbol_id, stmt->span);
         LLVMValueRef value = emit_expr(context, stmt->assign_stmt.value);
         if (storage == NULL || value == NULL) {
             return false;
@@ -510,7 +441,7 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
     }
 
     if (stmt->kind == STMT_BLOCK) {
-        return emit_block_statement(context, stmt, llvm_function);
+        return emit_statement_list(context, &stmt->block_stmt.body, llvm_function);
     }
 
     if (stmt->kind == STMT_EMPTY) {
@@ -519,7 +450,7 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
 
     if (stmt->kind == STMT_BREAK) {
         if (context->loop_depth == 0) {
-            fprintf(stderr, "codegen error: break outside of loop\n");
+            diagnostic_error(context->diagnostics, stmt->span, "codegen", "break outside of loop");
             return false;
         }
         LLVMBuildBr(context->builder, context->loop_break_blocks[context->loop_depth - 1]);
@@ -528,7 +459,7 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
 
     if (stmt->kind == STMT_CONTINUE) {
         if (context->loop_depth == 0) {
-            fprintf(stderr, "codegen error: continue outside of loop\n");
+            diagnostic_error(context->diagnostics, stmt->span, "codegen", "continue outside of loop");
             return false;
         }
         LLVMBuildBr(context->builder, context->loop_continue_blocks[context->loop_depth - 1]);
@@ -539,85 +470,96 @@ static bool emit_statement(CodegenContext *context, const Stmt *stmt, LLVMValueR
 }
 
 static bool emit_function(CodegenContext *context, const Function *function, LLVMValueRef llvm_function) {
-
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(context->llvm_context, llvm_function, "entry");
     LLVMPositionBuilderAtEnd(context->builder, entry);
-    context->local_count = 0;
+    context->local_count = function->symbol_count;
+    context->locals = xcalloc(context->local_count, sizeof(LLVMValueRef));
+    context->loop_depth = 0;
 
     for (size_t i = 0; i < function->param_count; i++) {
         LLVMValueRef param = LLVMGetParam(llvm_function, (unsigned) i);
         char *name = copy_name(function->params[i].name, function->params[i].length);
-        LLVMValueRef storage;
-        if (name == NULL) {
-            return false;
-        }
-        storage = create_entry_alloca(context, llvm_function, name);
+        LLVMValueRef storage = create_entry_alloca(context, llvm_function, name);
         free(name);
         LLVMBuildStore(context->builder, param, storage);
-        if (!define_local(context, function->params[i].name, function->params[i].length, storage)) {
+        if (!set_local(context, function->params[i].symbol_id, storage)) {
             return false;
         }
     }
 
-    for (size_t i = 0; i < function->statement_count; i++) {
-        if (!emit_statement(context, function->statements[i], llvm_function)) {
-            return false;
-        }
-        if (block_has_terminator(LLVMGetInsertBlock(context->builder))) {
-            break;
-        }
-    }
-
-    if (LLVMVerifyFunction(llvm_function, LLVMPrintMessageAction) != 0) {
-        fprintf(stderr, "codegen error: function verification failed\n");
+    if (!emit_statement_list(context, &function->body, llvm_function)) {
         return false;
     }
+
+    if (LLVMVerifyFunction(llvm_function, LLVMReturnStatusAction) != 0) {
+        diagnostic_error(context->diagnostics, function->span, "codegen", "function verification failed");
+        return false;
+    }
+    free(context->locals);
+    context->locals = NULL;
+    context->local_count = 0;
     return true;
 }
 
-bool codegen_emit_ir(const Program *program, const char *output_path) {
+bool codegen_emit_ir(const CheckedProgram *checked, const char *output_path, DiagnosticSink *diagnostics) {
     bool ok = false;
+    char *message = NULL;
     CodegenContext context = {0};
 
+    context.checked = checked;
+    context.diagnostics = diagnostics;
     context.llvm_context = LLVMContextCreate();
     context.module = LLVMModuleCreateWithNameInContext("rcc", context.llvm_context);
     context.builder = LLVMCreateBuilderInContext(context.llvm_context);
+    context.functions = xcalloc(checked->function_count, sizeof(LLVMValueRef));
+    context.function_types = xcalloc(checked->function_count, sizeof(LLVMTypeRef));
 
-    for (size_t i = 0; i < program->function_count; i++) {
+    for (size_t i = 0; i < checked->function_count; i++) {
         LLVMTypeRef function_type = NULL;
-        LLVMValueRef llvm_function = declare_function(&context, program->functions[i], &function_type);
-        if (context.function_count >= MAX_FUNCTIONS) {
-            fprintf(stderr, "codegen error: too many functions\n");
-            goto cleanup;
-        }
+        LLVMValueRef llvm_function = declare_function(&context, checked->functions[i].function, &function_type);
         if (llvm_function == NULL) {
             goto cleanup;
         }
-        context.function_defs[context.function_count] = program->functions[i];
-        context.functions[context.function_count] = llvm_function;
-        context.function_types[context.function_count] = function_type;
-        context.function_count++;
+        context.functions[i] = llvm_function;
+        context.function_types[i] = function_type;
     }
 
-    for (size_t i = 0; i < context.function_count; i++) {
-        if (!emit_function(&context, context.function_defs[i], context.functions[i])) {
+    for (size_t i = 0; i < checked->function_count; i++) {
+        if (!emit_function(&context, checked->functions[i].function, context.functions[i])) {
             goto cleanup;
         }
     }
 
-    if (LLVMVerifyModule(context.module, LLVMPrintMessageAction, NULL) != 0) {
-        fprintf(stderr, "codegen error: module verification failed\n");
+    if (LLVMVerifyModule(context.module, LLVMReturnStatusAction, &message) != 0) {
+        diagnostic_error(context.diagnostics,
+                         (SourceSpan) {0},
+                         "codegen",
+                         "module verification failed: %s",
+                         message == NULL ? "unknown verifier error" : message);
         goto cleanup;
     }
 
-    if (LLVMPrintModuleToFile(context.module, output_path, NULL) != 0) {
-        fprintf(stderr, "codegen error: failed to write IR to %s\n", output_path);
+    if (LLVMPrintModuleToFile(context.module, output_path, &message) != 0) {
+        diagnostic_error(context.diagnostics,
+                         (SourceSpan) {0},
+                         "codegen",
+                         "failed to write IR to %s: %s",
+                         output_path,
+                         message == NULL ? "unknown error" : message);
         goto cleanup;
     }
 
     ok = true;
 
 cleanup:
+    if (message != NULL) {
+        LLVMDisposeMessage(message);
+    }
+    free(context.locals);
+    free(context.loop_continue_blocks);
+    free(context.loop_break_blocks);
+    free(context.functions);
+    free(context.function_types);
     if (context.builder != NULL) {
         LLVMDisposeBuilder(context.builder);
     }

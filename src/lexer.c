@@ -73,7 +73,10 @@ static void skip_whitespace(Lexer *lexer) {
                 lexer_advance(lexer);
             }
             if (!closed) {
-                fprintf(stderr, "lexer error at %zu:%zu: unterminated block comment\n", lexer->line, lexer->column);
+                diagnostic_error(lexer->diagnostics,
+                                 (SourceSpan) {.line = lexer->line, .column = lexer->column},
+                                 "lexer",
+                                 "unterminated block comment");
                 lexer->has_error = true;
                 lexer->error_line = lexer->line;
                 lexer->error_column = lexer->column;
@@ -122,7 +125,7 @@ static TokenKind identifier_kind(const char *start, size_t length) {
     return TOKEN_IDENTIFIER;
 }
 
-void lexer_init(Lexer *lexer, const char *source) {
+void lexer_init(Lexer *lexer, const char *source, DiagnosticSink *diagnostics) {
     lexer->source = source;
     lexer->length = strlen(source);
     lexer->offset = 0;
@@ -131,6 +134,7 @@ void lexer_init(Lexer *lexer, const char *source) {
     lexer->has_error = false;
     lexer->error_line = 1;
     lexer->error_column = 1;
+    lexer->diagnostics = diagnostics;
 }
 
 Token lexer_next(Lexer *lexer) {
@@ -172,7 +176,10 @@ Token lexer_next(Lexer *lexer) {
         while (isdigit((unsigned char) lexer_peek(lexer))) {
             int digit = lexer_advance(lexer) - '0';
             if (value > (max_i32_magnitude - digit) / 10) {
-                fprintf(stderr, "lexer error at %zu:%zu: integer literal overflow\n", line, column);
+                diagnostic_error(lexer->diagnostics,
+                                 (SourceSpan) {.line = line, .column = column},
+                                 "lexer",
+                                 "integer literal overflow");
                 Token error = make_token(lexer, TOKEN_ERROR, start, (size_t) ((lexer->source + lexer->offset) - start));
                 error.line = line;
                 error.column = column;
@@ -272,7 +279,11 @@ Token lexer_next(Lexer *lexer) {
             }
             break;
         default:
-            fprintf(stderr, "lexer error at %zu:%zu: unexpected character '%c'\n", line, column, ch);
+            diagnostic_error(lexer->diagnostics,
+                             (SourceSpan) {.line = line, .column = column},
+                             "lexer",
+                             "unexpected character '%c'",
+                             ch);
             break;
     }
 

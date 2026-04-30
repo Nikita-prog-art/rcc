@@ -34,23 +34,44 @@ typedef enum BinaryOp {
     BINARY_GE
 } BinaryOp;
 
+typedef enum FlowFlags {
+    FLOW_NONE = 0,
+    FLOW_FALLTHROUGH = 1 << 0,
+    FLOW_RETURN = 1 << 1,
+    FLOW_BREAK = 1 << 2,
+    FLOW_CONTINUE = 1 << 3,
+    FLOW_DIVERGE = 1 << 4
+} FlowFlags;
+
 typedef struct Expr Expr;
 typedef struct Stmt Stmt;
 typedef struct Param Param;
 
+typedef struct Block {
+    Stmt **statements;
+    size_t count;
+    size_t capacity;
+} Block;
+
 struct Param {
-    const char *name;
+    char *name;
     size_t length;
+    SourceSpan span;
     TypeKind type;
+    size_t symbol_id;
 };
 
 struct Expr {
     ExprKind kind;
+    SourceSpan span;
+    TypeKind type;
+    bool has_type;
     union {
         long integer_value;
         struct {
-            const char *name;
+            char *name;
             size_t length;
+            size_t symbol_id;
         } name;
         struct {
             UnaryOp op;
@@ -62,8 +83,9 @@ struct Expr {
             Expr *rhs;
         } binary;
         struct {
-            const char *callee;
+            char *callee;
             size_t callee_length;
+            size_t function_id;
             Expr **args;
             size_t arg_count;
             size_t arg_capacity;
@@ -87,17 +109,21 @@ typedef enum StmtKind {
 
 struct Stmt {
     StmtKind kind;
+    SourceSpan span;
+    FlowFlags flow_flags;
     union {
         struct {
-            const char *name;
+            char *name;
             size_t length;
             TypeKind type;
             bool is_mutable;
+            size_t symbol_id;
             Expr *value;
         } let_stmt;
         struct {
-            const char *name;
+            char *name;
             size_t length;
+            size_t symbol_id;
             Expr *value;
         } assign_stmt;
         struct {
@@ -108,42 +134,34 @@ struct Stmt {
         } return_stmt;
         struct {
             Expr *condition;
-            Stmt **then_statements;
-            size_t then_count;
-            size_t then_capacity;
-            Stmt **else_statements;
-            size_t else_count;
-            size_t else_capacity;
+            Block then_block;
+            bool has_else;
+            Block else_block;
         } if_stmt;
         struct {
             Expr *condition;
-            Stmt **body_statements;
-            size_t body_count;
-            size_t body_capacity;
+            Block body;
         } while_stmt;
         struct {
-            Stmt **body_statements;
-            size_t body_count;
-            size_t body_capacity;
+            Block body;
         } loop_stmt;
         struct {
-            Stmt **statements;
-            size_t statement_count;
-            size_t statement_capacity;
+            Block body;
         } block_stmt;
     };
 };
 
 typedef struct Function {
-    const char *name;
+    char *name;
     size_t name_length;
+    SourceSpan span;
+    size_t function_id;
     TypeKind return_type;
     Param *params;
     size_t param_count;
     size_t param_capacity;
-    Stmt **statements;
-    size_t statement_count;
-    size_t statement_capacity;
+    size_t symbol_count;
+    Block body;
 } Function;
 
 typedef struct Program {
@@ -156,26 +174,27 @@ Program *program_create(void);
 void program_destroy(Program *program);
 void stmt_destroy(Stmt *stmt);
 void expr_destroy(Expr *expr);
-Function *function_create(const char *name, size_t name_length, TypeKind return_type);
-void function_append_param(Function *function, const char *name, size_t length, TypeKind type);
+Function *function_create(const char *name, size_t name_length, TypeKind return_type, SourceSpan span);
+void function_append_param(Function *function, const char *name, size_t length, TypeKind type, SourceSpan span);
 void function_append_statement(Function *function, Stmt *statement);
-Expr *expr_create_integer(long value);
-Expr *expr_create_name(const char *name, size_t length);
-Expr *expr_create_unary(UnaryOp op, Expr *operand);
-Expr *expr_create_binary(BinaryOp op, Expr *lhs, Expr *rhs);
-Expr *expr_create_call(const char *callee, size_t callee_length);
+Expr *expr_create_integer(long value, SourceSpan span);
+Expr *expr_create_name(const char *name, size_t length, SourceSpan span);
+Expr *expr_create_unary(UnaryOp op, Expr *operand, SourceSpan span);
+Expr *expr_create_binary(BinaryOp op, Expr *lhs, Expr *rhs, SourceSpan span);
+Expr *expr_create_call(const char *callee, size_t callee_length, SourceSpan span);
 void expr_append_call_arg(Expr *expr, Expr *arg);
-Stmt *stmt_create_let(const char *name, size_t length, TypeKind type, bool is_mutable, Expr *value);
-Stmt *stmt_create_assign(const char *name, size_t length, Expr *value);
-Stmt *stmt_create_expr(Expr *value);
-Stmt *stmt_create_return(Expr *value);
-Stmt *stmt_create_if(Expr *condition);
-Stmt *stmt_create_while(Expr *condition);
-Stmt *stmt_create_loop(void);
-Stmt *stmt_create_block(void);
-Stmt *stmt_create_empty(void);
-Stmt *stmt_create_break(void);
-Stmt *stmt_create_continue(void);
+Stmt *stmt_create_let(const char *name, size_t length, TypeKind type, bool is_mutable, Expr *value, SourceSpan span);
+Stmt *stmt_create_assign(const char *name, size_t length, Expr *value, SourceSpan span);
+Stmt *stmt_create_expr(Expr *value, SourceSpan span);
+Stmt *stmt_create_return(Expr *value, SourceSpan span);
+Stmt *stmt_create_if(Expr *condition, SourceSpan span);
+Stmt *stmt_create_while(Expr *condition, SourceSpan span);
+Stmt *stmt_create_loop(SourceSpan span);
+Stmt *stmt_create_block(SourceSpan span);
+Stmt *stmt_create_empty(SourceSpan span);
+Stmt *stmt_create_break(SourceSpan span);
+Stmt *stmt_create_continue(SourceSpan span);
+void block_append_statement(Block *block, Stmt *child);
 void stmt_append_then_statement(Stmt *stmt, Stmt *child);
 void stmt_append_else_statement(Stmt *stmt, Stmt *child);
 void stmt_append_while_statement(Stmt *stmt, Stmt *child);

@@ -14,6 +14,7 @@ SRC := \
 	src/lexer.c \
 	src/parser.c \
 	src/ast.c \
+	src/diagnostic.c \
 	src/semantic.c \
 	src/codegen.c
 

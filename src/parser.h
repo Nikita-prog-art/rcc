@@ -9,9 +9,10 @@ typedef struct Parser {
     Token current;
     Token next;
     bool has_error;
+    DiagnosticSink *diagnostics;
 } Parser;
 
-void parser_init(Parser *parser, const char *source);
+void parser_init(Parser *parser, const char *source, DiagnosticSink *diagnostics);
 Program *parse_program(Parser *parser);
 
 #endif
